@@ -34,6 +34,29 @@ fn one<A: Algorithm + Default + 'static>(_: &SimConfig) -> Result<Plan, ConfigEr
     Ok(Plan::single(Box::new(A::default())))
 }
 
+/// Pattern Formation reads which predefined shape to form from the config, so
+/// one algorithm entry covers every shape in [`PATTERNS`].
+fn pattern_formation(config: &SimConfig) -> Result<Plan, ConfigError> {
+    Ok(Plan::single(Box::new(PatternFormation {
+        shape: config.target_pattern,
+    })))
+}
+
+/// The predefined Pattern Formation shapes offered to the UI, as
+/// `(key, display name)`. The key is the lowercase `PatternShape` name the
+/// frontend sends back in `target_pattern`.
+pub const PATTERNS: &[(&str, &str)] = &[
+    ("star", "Star"),
+    ("circle", "Circle"),
+    ("square", "Square"),
+    ("triangle", "Triangle"),
+    ("pentagon", "Pentagon"),
+    ("hexagon", "Hexagon"),
+    ("line", "Line"),
+    ("cross", "Cross"),
+    ("heart", "Heart"),
+];
+
 pub const REGISTRY: &[Entry] = &[
     Entry {
         key: "Gathering",
@@ -52,8 +75,8 @@ pub const REGISTRY: &[Entry] = &[
     },
     Entry {
         key: "PatternFormation",
-        name: "Pattern Formation (star)",
-        build: one::<PatternFormation>,
+        name: "Pattern Formation",
+        build: pattern_formation,
     },
 ];
 

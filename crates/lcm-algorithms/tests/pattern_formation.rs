@@ -8,8 +8,8 @@
 
 use lcm_algorithms::simulation;
 use lcm_core::{
-    ActivationOrder, FaultKind, FaultSelection, Point, RobotState, SchedulerKind, SimConfig,
-    Simulation, TurnGap,
+    ActivationOrder, FaultKind, FaultSelection, PatternShape, Point, RobotState, SchedulerKind,
+    SimConfig, Simulation, TurnGap,
 };
 use std::f64::consts::PI;
 
@@ -167,12 +167,48 @@ fn crash_faults_excluded_and_live_robots_still_form_the_pattern() {
 }
 
 #[test]
+fn non_star_shapes_converge_and_terminate_on_both_schedulers() {
+    // The generalised pipeline forms shapes other than the star. We check only
+    // the pattern-agnostic outcome (everyone terminated, swarm not collapsed),
+    // since the star-specific radius-variation check does not fit a circle.
+    for shape in [
+        PatternShape::Circle,
+        PatternShape::Square,
+        PatternShape::Triangle,
+        PatternShape::Cross,
+        PatternShape::Line,
+    ] {
+        for seq in [false, true] {
+            let mut config = SimConfig {
+                num_of_robots: 16,
+                random_seed: 7,
+                target_pattern: shape,
+                ..pat_cfg()
+            };
+            if seq {
+                config = sequential(config);
+            }
+            let sim = run_to_end(&config);
+            assert!(sim.ended(), "{shape:?} did not converge (seq={seq})");
+            let r = sim.robots();
+            for i in 0..r.len() {
+                if r.fault[i] != FaultKind::Crash {
+                    assert!(r.terminated[i], "{shape:?}: robot {i} not terminated (seq={seq})");
+                }
+            }
+            let pts = live_positions(&sim);
+            assert!(rms_radius(&pts) > 1e-3, "{shape:?} collapsed (seq={seq})");
+        }
+    }
+}
+
+#[test]
 fn pattern_formation_is_registered_under_its_ui_key() {
     let entry = lcm_algorithms::REGISTRY
         .iter()
         .find(|e| e.key == "PatternFormation")
         .expect("PatternFormation must be registered");
-    assert_eq!(entry.name, "Pattern Formation (star)");
+    assert_eq!(entry.name, "Pattern Formation");
     let config = SimConfig {
         algorithm: "PatternFormation".to_owned(),
         ..SimConfig::default()

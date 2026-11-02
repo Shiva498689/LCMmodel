@@ -15,7 +15,7 @@ explains itself, steps marked `</>` open their code, and a guided tour walks thr
 3. [Gathering (center of gravity)](#3-gathering-center-of-gravity) — Each robot goes to the average of what it sees
 4. [In the browser](#4-in-the-browser) — Page, worker and Rust core working together
 5. [The sequential scheduler](#5-the-sequential-scheduler) — One robot at a time, turn by turn
-6. [Pattern Formation (star)](#6-pattern-formation-star) — Robots agree on a star and each walks to its point
+6. [Pattern Formation](#6-pattern-formation) — Robots agree on a shape and each walks to its point
 
 ---
 
@@ -933,7 +933,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:71`](../crates/lcm-wasm/src/lib.rs#L71)
+`advance` — [`crates/lcm-wasm/src/lib.rs:83`](../crates/lcm-wasm/src/lib.rs#L83)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -978,7 +978,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:221`](../crates/lcm-wasm/src/lib.rs#L221)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:233`](../crates/lcm-wasm/src/lib.rs#L233)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1394,9 +1394,9 @@ fn limited_target(&mut self, i: usize, destination: Point) -> Point {
 
 ---
 
-## 6. Pattern Formation (star)
+## 6. Pattern Formation
 
-Every robot builds the same 5-pointed star from the snapshot — centred on the swarm's average position, sized by its spread — spreads n target marks along it, works out which mark is its own, and walks there. Repeated by all robots, the swarm settles into a star. This is Robot._pattern_formation and Robot._pattern_terminal in robot.py (Suzuki & Yamashita 1999).
+Every robot builds the same chosen shape from the snapshot — centred on the swarm's average position, sized by its spread — spreads n target marks along it, works out which mark is its own, and walks there. Repeated by all robots, the swarm settles into the shape. This is Robot._pattern_formation and Robot._pattern_terminal in robot.py (Suzuki & Yamashita 1999), generalised from the fixed star to any predefined shape; that any pattern is formable this way is Universal Pattern Formation (Flocchini, Navarra, Pattanayak, Piselli & Santoro, arXiv:2412.10733). The default shape is a 5-pointed star; the selector in the toolbar offers circle, square, triangle and more.
 
 ```mermaid
 flowchart TD
@@ -1417,15 +1417,15 @@ flowchart TD
         flat{"All piled on one spot?<br/><small>R ≈ 0</small>"}
         stay2(["Stay put, done<br/><small>no size to work with</small>"])
     end
-    subgraph lane2["Draw the star"]
-        tmpl["Place n marks on a 5-point star<br/><small>star_unit_points() · scaled to centre, R</small>"]
+    subgraph lane2["Draw the shape"]
+        tmpl["Place n marks on the chosen shape<br/><small>pattern_unit_points() · scaled to centre, R</small>"]
     end
     subgraph lane3["Match and move"]
         sort["Sort robots and marks by angle<br/><small>two rings round the centre</small>"]
         rot["Pick the best line-up<br/><small>least total travel · tries all n</small>"]
         mine["Read off my mark<br/><small>my place in the ring</small>"]
         done{"Everyone within 3% of R of their mark?"}
-        term(["Terminate<br/><small>star formed</small>"])
+        term(["Terminate<br/><small>shape formed</small>"])
         move[/"Walk to my mark<br/><small>target = my mark</small>"/]
     end
     class comp k_entry
@@ -1459,32 +1459,32 @@ flowchart TD
     done -- "no" --> move
 ```
 
-- Every robot computes the same centre, size and marks from the same snapshot, so they agree on the star without communicating or any leader.
+- Every robot computes the same centre, size and marks from the same snapshot, so they agree on the shape without communicating or any leader.
 - The size is the root-mean-square distance from the centre, not the farthest robot, so the frame does not jump around the way an SEC-based one can.
 - Which robot takes which mark is decided by sorting both robots and marks by angle and then picking the rotation with the least total travel; that keeps the matching stable so the swarm settles instead of oscillating.
-- It finishes when every robot is within 3% of the size R of its mark. Exact placement is never required, because the star drifts a little as robots move.
-- Only a 5-pointed star is built; the same machinery would form another pattern given a different template.
+- It finishes when every robot is within 3% of the size R of its mark. Exact placement is never required, because the shape drifts a little as robots move.
+- Only the template changes between shapes; the frame, matching and termination are identical, so every predefined shape shares this one pipeline on either scheduler.
 - Each activation costs about n² work: it tries all n rotations, each summing n distances.
 
 | Step | What happens |
 | --- | --- |
 | Compute my target | Called from the COMPUTE phase of chart 2 with the robot's snapshot. Robots are oblivious, so it starts from scratch every time. |
-| List the robots in view | Take everyone that has not crashed, and call how many there are n. These are the robots the star must be shared out among. |
+| List the robots in view | Take everyone that has not crashed, and call how many there are n. These are the robots the shape must be shared out among. |
 | Fewer than two robots? | With no one else to form a shape with, there is nothing to do. |
 | Stay put, done | The robot keeps its place and marks itself finished. |
 | Find the centre | Average everyone's positions. Because every robot sees the same dots and averages them the same way, they all agree on this centre without talking. |
-| Find the size R | Measure how spread out the robots are around that centre (a root-mean-square distance). This single number, R, says how big the star should be. |
-| All piled on one spot? | If the spread is essentially zero there is no room for a star. |
+| Find the size R | Measure how spread out the robots are around that centre (a root-mean-square distance). This single number, R, says how big the shape should be. |
+| All piled on one spot? | If the spread is essentially zero there is no room for a shape. |
 | Stay put, done | Nothing meaningful to form; the robot stays where it is and finishes. |
-| Place n marks on a 5-point star | Draw a 5-pointed-star outline around the centre at size R and spread n evenly spaced target marks along its edges — one mark per robot. |
+| Place n marks on the chosen shape | Draw the chosen shape's outline around the centre at size R and spread n evenly spaced target marks along its edges — one mark per robot. The star keeps its original sampling; every other shape is sampled by arc length the same way. |
 | Sort robots and marks by angle | List the robots in the order a clock hand sweeps past them around the centre, and list the marks the same way. Now both are rings in angle order. |
 | Pick the best line-up | The two rings can be lined up n ways (rotations). Try them all and keep the one with the smallest total travel. This is what stops the matching from flip-flopping between turns and oscillating forever. |
 | Read off my mark | Find my own spot in the robot ring, apply the winning line-up, and that says which mark is mine. |
-| Everyone within 3% of R of their mark? | Look at the worst-placed robot. If every robot is within about 3% of R of its mark, the star is already formed. |
+| Everyone within 3% of R of their mark? | Look at the worst-placed robot. If every robot is within about 3% of R of its mark, the shape is already formed. |
 | Terminate | The robot stops for good; the formation is complete. |
 | Walk to my mark | The mark becomes the robot's target; chart 2 takes over (freeze check, then the move). Next time it wakes, it does all of this again. |
 
-`compute` — [`crates/lcm-algorithms/src/pattern_formation.rs:28`](../crates/lcm-algorithms/src/pattern_formation.rs#L28)
+`compute` — [`crates/lcm-algorithms/src/pattern_formation.rs:38`](../crates/lcm-algorithms/src/pattern_formation.rs#L38)
 
 ```rust
 #[allow(clippy::cast_precision_loss)]
@@ -1542,8 +1542,8 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, scratch: &mut Scratch) -> Decisi
         return stay;
     };
 
-    // Target points: the normalised star template placed in the frame.
-    let unit = star_unit_points(n);
+    // Target points: the normalised template of the chosen shape, placed in the frame.
+    let unit = pattern_unit_points(self.shape, n);
     let targets: Vec<Point> = unit
         .iter()
         .map(|u| Point::new(ox + r * u.x, oy + r * u.y))
@@ -1606,64 +1606,25 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, scratch: &mut Scratch) -> Decisi
 }
 ```
 
-`star_unit_points` — [`crates/lcm-algorithms/src/pattern_formation.rs:147`](../crates/lcm-algorithms/src/pattern_formation.rs#L147)
+`pattern_unit_points` — [`crates/lcm-algorithms/src/pattern_formation.rs:215`](../crates/lcm-algorithms/src/pattern_formation.rs#L215)
 
 ```rust
-/// `_pattern_unit_points`: `n` points spread by arc length along a 5-pointed-star
-/// outline, re-centred on their own centroid and normalised to unit RMS radius.
-#[allow(clippy::cast_precision_loss)]
-fn star_unit_points(n: usize) -> Vec<Point> {
-    const SPIKES: usize = 5;
-    const INNER: f64 = 0.382;
-    let m = 2 * SPIKES; // 10 vertices, alternating outer/inner
-
-    let mut verts = Vec::with_capacity(m);
-    for i in 0..m {
-        let ang = PI / 2.0 + i as f64 * PI / SPIKES as f64;
-        let rad = if i % 2 == 0 { 1.0 } else { INNER };
-        verts.push(Point::new(rad * libm::cos(ang), rad * libm::sin(ang)));
+/// The normalised template (zero centroid, unit RMS radius) of `shape`, as `n`
+/// points. The star keeps its original arc-length sampling untouched; every
+/// other shape is sampled evenly by arc length along its outline and normalised
+/// the same way, so all shapes share one embedding, matching and termination
+/// path. This is the only place the chosen pattern enters the algorithm.
+fn pattern_unit_points(shape: PatternShape, n: usize) -> Vec<Point> {
+    match shape {
+        PatternShape::Star => star_unit_points(n),
+        PatternShape::Circle => normalise(circle_points(n)),
+        PatternShape::Square => normalise(sample_closed(&regular_polygon(4, PI / 4.0), n)),
+        PatternShape::Triangle => normalise(sample_closed(&regular_polygon(3, PI / 2.0), n)),
+        PatternShape::Pentagon => normalise(sample_closed(&regular_polygon(5, PI / 2.0), n)),
+        PatternShape::Hexagon => normalise(sample_closed(&regular_polygon(6, 0.0), n)),
+        PatternShape::Line => normalise(sample_open(&line_outline(), n)),
+        PatternShape::Cross => normalise(sample_closed(&cross_outline(), n)),
+        PatternShape::Heart => normalise(sample_closed(&heart_outline(), n)),
     }
-
-    let mut segs = Vec::with_capacity(m);
-    let mut total = 0.0;
-    for i in 0..m {
-        let (a, b) = (verts[i], verts[(i + 1) % m]);
-        let len = libm::hypot(b.x - a.x, b.y - a.y);
-        segs.push(len);
-        total += len;
-    }
-
-    let mut pts = Vec::with_capacity(n);
-    for k in 0..n {
-        let d = (k as f64 / n as f64) * total;
-        let mut acc = 0.0;
-        for i in 0..m {
-            let len = segs[i];
-            if acc + len >= d || i == m - 1 {
-                let t = if len > 1e-12 { (d - acc) / len } else { 0.0 };
-                let (a, b) = (verts[i], verts[(i + 1) % m]);
-                pts.push(Point::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)));
-                break;
-            }
-            acc += len;
-        }
-    }
-
-    // Re-centre on the template's own centroid.
-    let inv_n = 1.0 / n as f64;
-    let cx = pts.iter().map(|p| p.x).sum::<f64>() * inv_n;
-    let cy = pts.iter().map(|p| p.y).sum::<f64>() * inv_n;
-    for p in &mut pts {
-        p.x -= cx;
-        p.y -= cy;
-    }
-    // Normalise to unit RMS radius (Python's `sqrt(...) or 1.0`).
-    let rms = libm::sqrt(pts.iter().map(|p| p.x * p.x + p.y * p.y).sum::<f64>() * inv_n);
-    let rms = if rms == 0.0 { 1.0 } else { rms };
-    for p in &mut pts {
-        p.x /= rms;
-        p.y /= rms;
-    }
-    pts
 }
 ```

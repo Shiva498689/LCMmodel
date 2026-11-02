@@ -291,6 +291,24 @@ export function algorithms() {
         wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
     }
 }
+
+/**
+ * The predefined Pattern Formation shapes, as JSON `[{"key": …, "name": …}, …]`.
+ * The `key` is what the UI sends back in the config's `target_pattern`.
+ * @returns {string}
+ */
+export function patterns() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const ret = wasm.patterns();
+        deferred1_0 = ret[0];
+        deferred1_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

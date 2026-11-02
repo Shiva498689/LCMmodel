@@ -37,7 +37,16 @@ window.lcm = { renderer, client, settings, parseCoordinates, stats: {}, ready: n
   get state() { return state; } };
 
 /* ------------------------------------------------------------ run control */
-function config() { return readConfig(settings.values, $("algorithm").value, settings.customPoints); }
+function config() {
+  const c = readConfig(settings.values, $("algorithm").value, settings.customPoints);
+  c.target_pattern = $("target-pattern")?.value || "star"; // Pattern Formation only; others ignore it
+  return c;
+}
+
+/** The pattern list applies only to Pattern Formation; hide it otherwise. */
+function syncPatternVisibility() {
+  $("target-pattern").hidden = $("algorithm").value !== "PatternFormation";
+}
 
 let fitPending = false; // fit the view to the new run's first frame
 
@@ -115,6 +124,7 @@ function setState(next) {
   $("step_time").disabled = !canRun;
   $("reset").disabled = next === "loading";
   $("algorithm").disabled = next === "loading";
+  $("target-pattern").disabled = next === "loading";
   updateHud(true);
 }
 
@@ -132,9 +142,14 @@ function step(unit) {
   setState("paused");
 }
 
-client.on("ready", (list) => {
+client.on("ready", ({ algorithms: list, patterns }) => {
   algorithms = list;
   $("algorithm").innerHTML = list.map((a) => `<option value="${a.key}">${a.name}</option>`).join("");
+  // Default to Pattern Formation so a fresh page forms a star; the shape list
+  // beside it (default star) appears only while Pattern Formation is selected.
+  if (list.some((a) => a.key === "PatternFormation")) $("algorithm").value = "PatternFormation";
+  $("target-pattern").innerHTML = (patterns ?? []).map((p) => `<option value="${p.key}">${p.name}</option>`).join("");
+  syncPatternVisibility();
   $("loading_text").textContent = "Building the swarm…";
   newRun();
 });
@@ -235,7 +250,8 @@ $("play").addEventListener("click", play);
 $("step_event").addEventListener("click", () => step("event"));
 $("step_time").addEventListener("click", () => step("time"));
 $("reset").addEventListener("click", () => newRun());
-$("algorithm").addEventListener("change", onSettingChange);
+$("algorithm").addEventListener("change", () => { syncPatternVisibility(); onSettingChange(); });
+$("target-pattern").addEventListener("change", onSettingChange);
 $("playback").addEventListener("change", (e) => client.speed(Number(e.target.value)));
 $("defaults").addEventListener("click", () => settings.reset());
 $("toggle_settings").addEventListener("click", toggleSettings);
