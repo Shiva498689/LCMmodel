@@ -1,6 +1,6 @@
 /**
  * `advance` result codes, shared with `web/worker.js`.
- * @enum {0 | 1 | 2 | 3 | 4 | 5 | 6}
+ * @enum {0 | 1 | 2 | 3 | 4 | 5 | 6 | 7}
  */
 export const Stop = Object.freeze({
     Budget: 0, "0": "Budget",
@@ -10,6 +10,10 @@ export const Stop = Object.freeze({
     MaxTime: 4, "4": "MaxTime",
     Stalled: 5, "5": "Stalled",
     MaxTurns: 6, "6": "MaxTurns",
+    /**
+     * Only `advance_to_move` returns it: a robot has just started a move.
+     */
+    Moved: 7, "7": "Moved",
 });
 
 export class WasmSimulation {
@@ -32,6 +36,28 @@ export class WasmSimulation {
      */
     advance(max_events, until_time) {
         const ret = wasm.wasmsimulation_advance(this.__wbg_ptr, max_events, until_time);
+        return ret;
+    }
+    /**
+     * Handles events one by one, as `advance` does, but stops as soon as a robot starts a move
+     * (`Stop::Moved`; `moved_robot` says which), even if that is at `until_time` itself. The page
+     * uses it to skip turns in which nobody moves, and to catch the start of every walk,
+     * including one that begins at the instant the last one ends.
+     * @param {number} max_events
+     * @param {number} until_time
+     * @returns {Stop}
+     */
+    advance_to_move(max_events, until_time) {
+        const ret = wasm.wasmsimulation_advance_to_move(this.__wbg_ptr, max_events, until_time);
+        return ret;
+    }
+    /**
+     * When robot `i` arrives, if it is on a move right now; NaN if it is not.
+     * @param {number} i
+     * @returns {number}
+     */
+    arrival_time(i) {
+        const ret = wasm.wasmsimulation_arrival_time(this.__wbg_ptr, i);
         return ret;
     }
     /**
@@ -133,6 +159,22 @@ export class WasmSimulation {
         return ret;
     }
     /**
+     * World coordinates the frame's positions, targets and circle centres are
+     * measured from (a robot's world position is origin + offset, added in f64).
+     * @returns {number}
+     */
+    frame_origin_x() {
+        const ret = wasm.wasmsimulation_frame_origin_x(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    frame_origin_y() {
+        const ret = wasm.wasmsimulation_frame_origin_y(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {number}
      */
     frame_time() {
@@ -145,6 +187,14 @@ export class WasmSimulation {
      */
     light() {
         const ret = wasm.wasmsimulation_light(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * The robot `advance_to_move` last saw start a move, or -1.
+     * @returns {number}
+     */
+    moved_robot() {
+        const ret = wasm.wasmsimulation_moved_robot(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -207,6 +257,15 @@ export class WasmSimulation {
         return ret !== 0;
     }
     /**
+     * Draw the robots as they are at time `t`, a time between the last event handled and the
+     * next one (a walk has no events inside it, so this is what makes it glide). NaN, or any
+     * time before the run's clock, goes back to drawing the run's own time.
+     * @param {number} t
+     */
+    set_view_time(t) {
+        wasm.wasmsimulation_set_view_time(this.__wbg_ptr, t);
+    }
+    /**
      * Handles exactly one event and reports it as
      * `[time, robot (-1 = none), kind, outcome]`: kind 0 crash, 1 look,
      * 2 wait, 3 visualize, -1 none; outcome is `StepOutcome::code`.
@@ -217,6 +276,15 @@ export class WasmSimulation {
         var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
+    }
+    /**
+     * How far the farthest robot that has not crashed is from the centre of those robots
+     * right now: a measure of how spread out the swarm is, for the page's convergence plot.
+     * @returns {number}
+     */
+    swarm_size() {
+        const ret = wasm.wasmsimulation_swarm_size(this.__wbg_ptr);
+        return ret;
     }
     /**
      * `[tx0, ty0, …]`, NaN where a robot has no target.
@@ -265,7 +333,7 @@ export class WasmSimulation {
         return ret;
     }
     /**
-     * `[x0, y0, x1, y1, …]`
+     * `[x0, y0, x1, y1, …]`, offsets from the frame origin.
      * @returns {Float32Array}
      */
     xy() {
@@ -276,7 +344,99 @@ export class WasmSimulation {
 if (Symbol.dispose) WasmSimulation.prototype[Symbol.dispose] = WasmSimulation.prototype.free;
 
 /**
- * The algorithms the core knows, as JSON `[{"key": …, "name": …}, …]`.
+ * A SqGathering run played one turn at a time (the step-by-step page).
+ */
+export class WasmSqTrace {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmSqTraceFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmsqtrace_free(ptr, 0);
+    }
+    /**
+     * # Errors
+     * Malformed JSON, or a configuration the core or SqGathering refuses.
+     * @param {string} config_json
+     */
+    constructor(config_json) {
+        const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmsqtrace_new(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmSqTraceFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @returns {string}
+     */
+    report() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmsqtrace_report(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The start positions `[x0, y0, x1, y1, …]` (stacked starts applied).
+     * @returns {Float64Array}
+     */
+    start_positions() {
+        const ret = wasm.wasmsqtrace_start_positions(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * `"running"`, `"gathered"`, `"incomplete"` or `"stalled"`.
+     * @returns {string}
+     */
+    status() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmsqtrace_status(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Plays the next turn and returns it as JSON, or `null` once the run
+     * has stopped.
+     * @returns {string}
+     */
+    step() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.wasmsqtrace_step(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) WasmSqTrace.prototype[Symbol.dispose] = WasmSqTrace.prototype.free;
+
+/**
+ * The algorithms the core knows, as JSON `[{"key": …, "name": …,
+ * "sequential_only": …, "multiplicities": …}, …]`: `sequential_only` when
+ * the algorithm refuses the async scheduler, `multiplicities` when it works
+ * with points that hold several robots (the page rings them).
  * @returns {string}
  */
 export function algorithms() {
@@ -293,20 +453,34 @@ export function algorithms() {
 }
 
 /**
- * The predefined Pattern Formation shapes, as JSON `[{"key": …, "name": …}, …]`.
- * The `key` is what the UI sends back in the config's `target_pattern`.
+ * Runs a SqGathering `SimConfig` to the end: `{"report": …, "trace": [turn,
+ * …]}` (`trace` empty unless `with_trace`). Same output as
+ * `lcm seq --format json --trace FILE`.
+ *
+ * # Errors
+ * Malformed JSON, or a configuration the core or SqGathering refuses.
+ * @param {string} config_json
+ * @param {boolean} with_trace
  * @returns {string}
  */
-export function patterns() {
-    let deferred1_0;
-    let deferred1_1;
+export function sq_gathering_trace(config_json, with_trace) {
+    let deferred3_0;
+    let deferred3_1;
     try {
-        const ret = wasm.patterns();
-        deferred1_0 = ret[0];
-        deferred1_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
+        const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.sq_gathering_trace(ptr0, len0, with_trace);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
     } finally {
-        wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 function __wbg_get_imports() {
@@ -334,6 +508,10 @@ function __wbg_get_imports() {
             const ret = new Float32Array(getArrayF32FromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg_new_from_slice_f545fd22ddc142b8: function(arg0, arg1) {
+            const ret = new Float64Array(getArrayF64FromWasm0(arg0, arg1));
+            return ret;
+        },
         __wbindgen_init_externref_table: function() {
             const table = wasm.__wbindgen_externrefs;
             const offset = table.grow(4);
@@ -353,6 +531,9 @@ function __wbg_get_imports() {
 const WasmSimulationFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmsimulation_free(ptr, 1));
+const WasmSqTraceFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmsqtrace_free(ptr, 1));
 
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;

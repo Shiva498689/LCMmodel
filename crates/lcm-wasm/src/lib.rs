@@ -5,7 +5,10 @@
 //! Typed arrays returned by the frame getters are fresh copies, so the worker
 //! can transfer their buffers to the page without copying again.
 
-use lcm_core::{Budget, EventKind, Frame, SimConfig, Simulation, StopReason};
+use lcm_algorithms::sq_trace::Tracer;
+use lcm_core::{
+    Budget, EventKind, Frame, RobotState, SimConfig, Simulation, StepOutcome, StopReason,
+};
 use wasm_bindgen::prelude::*;
 
 /// `advance` result codes, shared with `web/worker.js`.
@@ -19,6 +22,8 @@ pub enum Stop {
     MaxTime = 4,
     Stalled = 5,
     MaxTurns = 6,
+    /// Only `advance_to_move` returns it: a robot has just started a move.
+    Moved = 7,
 }
 
 impl From<StopReason> for Stop {
@@ -35,13 +40,24 @@ impl From<StopReason> for Stop {
     }
 }
 
-/// The algorithms the core knows, as JSON `[{"key": …, "name": …}, …]`.
+/// The algorithms the core knows, as JSON `[{"key": …, "name": …,
+/// "sequential_only": …, "multiplicities": …}, …]`: `sequential_only` when
+/// the algorithm refuses the async scheduler, `multiplicities` when it works
+/// with points that hold several robots (the page rings them).
 #[wasm_bindgen]
 #[must_use]
 pub fn algorithms() -> String {
     let list: Vec<_> = lcm_algorithms::REGISTRY
         .iter()
-        .map(|e| serde_json::json!({ "key": e.key, "name": e.name }))
+        .map(|e| {
+            let (sequential_only, multiplicities) = lcm_algorithms::requirements(e.key);
+            serde_json::json!({
+                "key": e.key,
+                "name": e.name,
+                "sequential_only": sequential_only,
+                "multiplicities": multiplicities,
+            })
+        })
         .collect();
     serde_json::Value::Array(list).to_string()
 }
@@ -62,6 +78,13 @@ pub fn patterns() -> String {
 pub struct WasmSimulation {
     sim: Simulation,
     frame: Frame,
+    /// Reused by `swarm_size`, so sampling it allocates nothing.
+    positions: Vec<lcm_core::Point>,
+    /// A time between two events at which to draw the robots that are walking, set by the page
+    /// while it paces a turn. Display only: the run's own clock (`time`) is not touched.
+    view_time: Option<f64>,
+    /// The robot `advance_to_move` last saw start a move.
+    moved: i32,
 }
 
 #[wasm_bindgen]
@@ -77,12 +100,16 @@ impl WasmSimulation {
         Ok(Self {
             sim,
             frame: Frame::default(),
+            positions: Vec::new(),
+            view_time: None,
+            moved: -1,
         })
     }
 
     /// Handles up to `max_events` events, stopping early before the first
     /// event after `until_time`, at a configured limit, or at the end.
     pub fn advance(&mut self, max_events: u32, until_time: f64) -> Stop {
+        self.view_time = None;
         self.sim
             .advance(Budget {
                 max_events: u64::from(max_events),
@@ -91,9 +118,64 @@ impl WasmSimulation {
             .into()
     }
 
+    /// Handles events one by one, as `advance` does, but stops as soon as a robot starts a move
+    /// (`Stop::Moved`; `moved_robot` says which), even if that is at `until_time` itself. The page
+    /// uses it to skip turns in which nobody moves, and to catch the start of every walk,
+    /// including one that begins at the instant the last one ends.
+    pub fn advance_to_move(&mut self, max_events: u32, until_time: f64) -> Stop {
+        self.view_time = None;
+        for _ in 0..max_events {
+            // A limit or the end first, as `advance` checks them (a budget of 0 is only that check).
+            let limit = self.sim.advance(Budget {
+                max_events: 0,
+                until_time,
+            });
+            if limit != StopReason::Budget {
+                return limit.into();
+            }
+            if self.sim.next_event_time().is_some_and(|t| t > until_time) {
+                return Stop::UntilTime;
+            }
+            let info = self.sim.step();
+            if info.outcome == StepOutcome::Moved {
+                self.moved = info.robot;
+                return Stop::Moved;
+            }
+        }
+        Stop::Budget
+    }
+
+    /// The robot `advance_to_move` last saw start a move, or -1.
+    #[must_use]
+    pub fn moved_robot(&self) -> i32 {
+        self.moved
+    }
+
+    /// When robot `i` arrives, if it is on a move right now; NaN if it is not.
+    #[must_use]
+    pub fn arrival_time(&self, i: u32) -> f64 {
+        let i = i as usize;
+        if i >= self.sim.robots().len() {
+            return f64::NAN;
+        }
+        self.sim.arrival_time(i).unwrap_or(f64::NAN)
+    }
+
+    /// Draw the robots as they are at time `t`, a time between the last event handled and the
+    /// next one (a walk has no events inside it, so this is what makes it glide). NaN, or any
+    /// time before the run's clock, goes back to drawing the run's own time.
+    pub fn set_view_time(&mut self, t: f64) {
+        self.view_time = (t.is_finite() && t >= self.sim.time()).then_some(t);
+    }
+
     #[must_use]
     pub fn time(&self) -> f64 {
         self.sim.time()
+    }
+
+    /// The time the current frame shows: the view time while one is set, else the run's time.
+    fn display_time(&self) -> f64 {
+        self.view_time.unwrap_or_else(|| self.sim.time())
     }
 
     /// Events handled so far. `f64` because JS numbers are exact up to 2⁵³.
@@ -108,6 +190,31 @@ impl WasmSimulation {
     #[allow(clippy::cast_precision_loss)]
     pub fn tick_count(&self) -> f64 {
         self.sim.tick_count() as f64
+    }
+
+    /// How far the farthest robot that has not crashed is from the centre of those robots
+    /// right now: a measure of how spread out the swarm is, for the page's convergence plot.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn swarm_size(&mut self) -> f64 {
+        let t = self.sim.time();
+        self.positions.clear();
+        let robots = self.sim.robots();
+        for i in 0..robots.len() {
+            if robots.state[i] != RobotState::Crash {
+                self.positions.push(self.sim.position_at(i, t));
+            }
+        }
+        if self.positions.is_empty() {
+            return 0.0;
+        }
+        let n = self.positions.len() as f64;
+        let cx = self.positions.iter().map(|p| p.x).sum::<f64>() / n;
+        let cy = self.positions.iter().map(|p| p.y).sum::<f64>() / n;
+        self.positions
+            .iter()
+            .map(|p| (p.x - cx).hypot(p.y - cy))
+            .fold(0.0, f64::max)
     }
 
     /// `true` under the sequential scheduler.
@@ -150,6 +257,7 @@ impl WasmSimulation {
     /// `[time, robot (-1 = none), kind, outcome]`: kind 0 crash, 1 look,
     /// 2 wait, 3 visualize, -1 none; outcome is `StepOutcome::code`.
     pub fn step_one(&mut self) -> Box<[f64]> {
+        self.view_time = None;
         let info = self.sim.step();
         let kind = match info.kind {
             Some(EventKind::Crash) => 0.0,
@@ -175,7 +283,7 @@ impl WasmSimulation {
         if i >= r.len() {
             return "null".to_owned();
         }
-        let p = self.sim.position_at(i, self.sim.time());
+        let p = self.sim.position_at(i, self.display_time());
         let point = |p: Option<lcm_core::Point>| p.map(|p| [p.x, p.y]);
         serde_json::json!({
             "id": i,
@@ -189,6 +297,7 @@ impl WasmSimulation {
             "light": r.light[i].map(|l| format!("{l:?}")),
             "task": r.task[i].map(|t| format!("{t:?}")),
             "target": point(r.target[i]),
+            "goal": point(r.goal(i)),
             "move_start": point(r.start_time[i].map(|_| r.start_pos[i])),
             "speed": r.speed[i],
             "travelled": r.travelled[i],
@@ -257,7 +366,7 @@ impl WasmSimulation {
 
     /// Captures the state at the current time; read it with the getters below.
     pub fn capture_frame(&mut self) {
-        self.sim.write_frame(self.sim.time(), &mut self.frame);
+        self.sim.write_frame(self.display_time(), &mut self.frame);
     }
 
     #[must_use]
@@ -265,7 +374,19 @@ impl WasmSimulation {
         self.frame.time
     }
 
-    /// `[x0, y0, x1, y1, …]`
+    /// World coordinates the frame's positions, targets and circle centres are
+    /// measured from (a robot's world position is origin + offset, added in f64).
+    #[must_use]
+    pub fn frame_origin_x(&self) -> f64 {
+        self.frame.origin[0]
+    }
+
+    #[must_use]
+    pub fn frame_origin_y(&self) -> f64 {
+        self.frame.origin[1]
+    }
+
+    /// `[x0, y0, x1, y1, …]`, offsets from the frame origin.
     #[must_use]
     pub fn xy(&self) -> js_sys::Float32Array {
         js_sys::Float32Array::from(self.frame.xy.as_slice())
@@ -311,6 +432,85 @@ impl WasmSimulation {
     #[must_use]
     pub fn multiplicity(&self) -> js_sys::Uint16Array {
         js_sys::Uint16Array::from(self.frame.multiplicity.as_slice())
+    }
+}
+
+// ── SqGathering, turn by turn ───────────────────────────────────────────────
+// The run is an ordinary core simulation on the sequential scheduler; these
+// add the per-turn trace (observation, κ, rule) the step-by-step page shows.
+
+/// Runs a SqGathering `SimConfig` to the end: `{"report": …, "trace": [turn,
+/// …]}` (`trace` empty unless `with_trace`). Same output as
+/// `lcm seq --format json --trace FILE`.
+///
+/// # Errors
+/// Malformed JSON, or a configuration the core or SqGathering refuses.
+#[wasm_bindgen]
+pub fn sq_gathering_trace(config_json: &str, with_trace: bool) -> Result<String, JsError> {
+    let config: SimConfig = serde_json::from_str(config_json)?;
+    let mut tracer = Tracer::new(&config)?;
+    let mut trace = Vec::new();
+    let report = tracer.run_with(|r| {
+        if with_trace {
+            trace.push(r.clone());
+        }
+    });
+    Ok(serde_json::json!({ "report": report, "trace": trace }).to_string())
+}
+
+/// A SqGathering run played one turn at a time (the step-by-step page).
+#[wasm_bindgen]
+pub struct WasmSqTrace {
+    tracer: Tracer,
+}
+
+#[wasm_bindgen]
+impl WasmSqTrace {
+    /// # Errors
+    /// Malformed JSON, or a configuration the core or SqGathering refuses.
+    #[wasm_bindgen(constructor)]
+    pub fn new(config_json: &str) -> Result<WasmSqTrace, JsError> {
+        let config: SimConfig = serde_json::from_str(config_json)?;
+        Ok(Self {
+            tracer: Tracer::new(&config)?,
+        })
+    }
+
+    /// Plays the next turn and returns it as JSON, or `null` once the run
+    /// has stopped.
+    pub fn step(&mut self) -> String {
+        self.tracer.next_round().map_or_else(
+            || "null".to_owned(),
+            |r| serde_json::to_string(&r).unwrap_or_default(),
+        )
+    }
+
+    /// `"running"`, `"gathered"`, `"incomplete"` or `"stalled"`.
+    #[must_use]
+    pub fn status(&self) -> String {
+        serde_json::to_value(self.tracer.status())
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The start positions `[x0, y0, x1, y1, …]` (stacked starts applied).
+    #[must_use]
+    pub fn start_positions(&self) -> js_sys::Float64Array {
+        let flat: Vec<f64> = self
+            .tracer
+            .simulation()
+            .robots()
+            .start_pos
+            .iter()
+            .flat_map(|p| [p.x, p.y])
+            .collect();
+        js_sys::Float64Array::from(flat.as_slice())
+    }
+
+    #[must_use]
+    pub fn report(&self) -> String {
+        serde_json::to_string(&self.tracer.report()).unwrap_or_default()
     }
 }
 

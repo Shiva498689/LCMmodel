@@ -1,4 +1,4 @@
-//! Replays the Python fixtures (`reference/gen_fixtures.py`) and requires the
+//! Replays the Python fixtures (`fixtures/`) and requires the
 //! Rust core to take the same steps: same event order, robots, kinds and
 //! outcomes, with times and coordinates equal to within 1e-9 (relative).
 
@@ -195,9 +195,16 @@ fn rust_core_matches_python_fixtures() {
 #[test]
 fn every_registered_algorithm_builds() {
     for entry in lcm_algorithms::REGISTRY {
+        // An algorithm that refuses the async default gets the scheduler it needs.
+        let (sequential_only, _) = lcm_algorithms::requirements(entry.key);
         let config = SimConfig {
             algorithm: entry.key.to_owned(),
             num_of_robots: 20,
+            scheduler: if sequential_only {
+                lcm_core::SchedulerKind::Sequential
+            } else {
+                lcm_core::SchedulerKind::Async
+            },
             ..SimConfig::default()
         };
         let mut sim = lcm_algorithms::simulation(&config).unwrap();

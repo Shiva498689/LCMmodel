@@ -184,7 +184,20 @@ a.btn { text-decoration: none; }
 .btn.outline { border-color: var(--border-strong); }
 .btn[aria-pressed="true"] { background: var(--accent-weak); color: var(--accent); }
 .btn svg { flex: none; }
+#toolbar select[hidden] { display: none; }
+/* The Examples menu opens under its toolbar button (positioned by app.js), like the Export menu. */
+#examples_menu { right: auto; bottom: auto; min-width: 280px; max-width: min(360px, calc(100vw - 16px)); }
+.menu-item { height: auto; min-height: 36px; padding: 6px 10px 6px 8px; gap: 8px; text-align: left; }
+.menu-item .tick { flex: none; display: inline-flex; visibility: hidden; color: var(--accent); }
+.menu-item[aria-checked="true"] .tick { visibility: visible; }
+.menu-item[aria-checked="true"] { background: var(--accent-weak); }
+.menu-item .text { display: grid; gap: 1px; }
+.menu-item .title { font-weight: 600; }
+.menu-item .note { color: var(--text-3); font-size: 11.5px; font-weight: 400; white-space: normal; }
+.menu-item:first-child { margin-bottom: 4px; }
 #toolbar select { height: 32px; border-radius: var(--radius-sm); background: var(--surface-solid); }
+/* The menu is as wide as its longest entry: with the "per turn" entries (sequential scheduler) hold it to a width the toolbar can afford. */
+#playback.has-turns { width: 100px; padding: 0 20px 0 6px; text-overflow: clip; }
 
 .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
 .badge.warn { background: var(--warn-weak); color: var(--warn-text); }
@@ -199,6 +212,8 @@ a.btn { text-decoration: none; }
 .hud-status.ended { color: var(--accent); font-weight: 600; }
 .progress { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.25s; }
+.hud-plot { display: grid; gap: 4px; }
+.hud-plot canvas { width: 100%; height: 55px; display: block; border-radius: 6px; background: var(--surface-2); }
 .hud-perf { color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; border-top: 1px solid var(--border); padding-top: 8px; }
 .last-event { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); background: var(--surface-2); border-radius: 6px; padding: 6px 8px; }
 
@@ -223,6 +238,49 @@ a.btn { text-decoration: none; }
 .menu { position: fixed; z-index: 30; right: 60px; bottom: 60px; padding: 4px; display: grid; min-width: 190px; }
 .menu .btn { justify-content: flex-start; }
 
+/* A short laptop screen: the status panel and the view tools share the right edge, so tighten the panel. */
+@media (min-width: 761px) and (max-height: 800px) {
+  #hud { gap: 4px; padding: 10px 14px; }
+}
+
+/* Wherever the view tools are a column (twelve of them), they take two columns, and the status panel (the tallest panel,
+ * at the other end of the right edge) gives up its plot, then everything but the essentials, so the two never meet. */
+@media (min-width: 761px) and (min-height: 521px) {
+  #tools { display: grid; grid-template-columns: repeat(2, auto); gap: 2px; }
+}
+/* Phones: twelve tools in one row are too many; full screen is the one a phone can do without. */
+@media (max-width: 760px) { #fullscreen { display: none; } }
+/* Where the status panel's Zoom row is shown (not on phones, nor on screens under 581 px high, which drop its extra rows), it has the + and −. */
+@media (min-width: 761px) and (min-height: 581px) { #zoom_in, #zoom_out { display: none; } }
+#canvas.measuring { cursor: crosshair; }
+@media (min-width: 761px) and (max-height: 680px) {
+  #hud .hud-plot { display: none; }
+}
+@media (min-width: 761px) and (max-height: 580px) {
+  #hud .hud-extra { display: none !important; }
+}
+
+/* The overview map: bottom right, just left of the view tools (app.js sets its right edge). Only where there is room. */
+#overview { bottom: 12px; right: 76px; padding: 0; overflow: hidden; z-index: 4; cursor: crosshair; line-height: 0; }
+#overview canvas { display: block; }
+@media (max-width: 1219px), (max-height: 520px) { #overview { display: none; } }
+
+/* The caption while a turn is played one at a time: above the legend, left-aligned with it. */
+#turn_caption { left: 12px; bottom: 56px; width: min(500px, calc(100vw - 100px)); padding: 10px 14px; display: grid; gap: 3px; z-index: 5; }
+#settings:not([hidden]) ~ #turn_caption { left: 324px; width: min(500px, calc(100vw - 440px)); }
+#turn_caption .cap-head { font-weight: 650; }
+#turn_caption .cap-body { color: var(--text-2); line-height: 1.4; }
+
+/* scale bar in the status panel */
+#hud .scale { display: inline-flex; align-items: center; gap: 8px; }
+#hud .zoomgauge { display: inline-flex; align-items: center; gap: 4px; }
+#hud .zoombtn { width: 20px; height: 20px; min-width: 20px; padding: 0; border: 1px solid var(--border-strong); border-radius: 6px; }
+#hud_zoom { min-width: 48px; text-align: right; }
+#hud_zoom_meter { position: relative; display: inline-block; width: 40px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-2);
+  background-image: repeating-linear-gradient(90deg, transparent 0, transparent calc(16.667% - 1px), var(--border-strong) calc(16.667% - 1px), var(--border-strong) 16.667%); }
+#hud_zoom_fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); opacity: 0.85; border-radius: 4px; }
+#hud_scale_bar { display: inline-block; height: 7px; border: 1.5px solid var(--text-2); border-top: none; box-sizing: border-box; }
+
 /* hover tooltip */
 #tip { position: fixed; z-index: 20; pointer-events: none; padding: 4px 8px; border-radius: 6px; background: var(--surface-solid); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 12px; white-space: nowrap; }
 
@@ -238,6 +296,21 @@ a.btn { text-decoration: none; }
 .dialog code { font-family: var(--mono); font-size: 11.5px; }
 .dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dialog-foot .sub { font-size: 12px; color: var(--text-3); }
+/* The "Embed in a web page" window (embed.js). */
+#embed_dialog .dialog { max-height: calc(100dvh - 24px); overflow-y: auto; }
+.embed-options { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; align-items: center; font-size: 13px; }
+.embed-options .k { color: var(--text-2); }
+.embed-options .checks, .embed-options .size { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.embed-options .check { display: inline-flex; align-items: center; gap: 5px; }
+.embed-options .size label { display: inline-flex; align-items: center; gap: 6px; }
+.embed-options .size input { width: 64px; height: 28px; }
+.embed-options .presets { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.embed-options select { height: 30px; max-width: 100%; }
+.embed-options .check:has(input:disabled) { color: var(--text-3); }
+#embed_code { width: 100%; font-family: var(--mono); font-size: 11.5px; line-height: 1.45; resize: vertical; word-break: break-all; }
+.dialog-foot .buttons { display: flex; gap: 8px; }
+#embed_try { text-decoration: none; }
+#embed_try:hover { color: var(--accent); }
 .dialog-foot .sub.error { color: var(--danger); }
 #coords textarea { min-height: 240px; }
 .keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: center; }
@@ -259,8 +332,11 @@ kbd { color: var(--text); font-family: var(--mono); font-size: 11.5px; padding: 
 .sheet-close { display: none; }
 
 /* Tablet and small laptops: icon-only toolbar, stats under it on the right. */
-@media (max-width: 1099px) {
+@media (max-width: 1219px) {
   #toolbar .label { display: none; }
+  /* Never wider than the screen: if fonts run wide, the algorithm menu gives up the room. */
+  #toolbar { max-width: calc(100vw - 24px); }
+  #algorithm { flex: 0 1 auto; min-width: 120px; }
   #hud { top: calc(var(--top-h, 56px) + 8px); width: 220px; }
   #inspector { top: calc(var(--top-h, 56px) + 8px); right: 244px; }
 }
@@ -277,6 +353,7 @@ kbd { color: var(--text); font-family: var(--mono); font-size: 11.5px; padding: 
   #tools { flex-direction: row; }
   #settings { max-height: calc(100vh - var(--top-h, 56px) - 20px); }
   #legend { display: none; }
+  #turn_caption, #settings:not([hidden]) ~ #turn_caption { bottom: 68px; left: 12px; width: min(500px, calc(100vw - 100px)); }
 }
 
 /* Phones: full-width toolbar, settings as a bottom sheet, tools in a row. */
@@ -284,6 +361,7 @@ kbd { color: var(--text); font-family: var(--mono); font-size: 11.5px; padding: 
   #toolbar { top: 8px; left: 8px; right: 8px; flex-wrap: wrap; justify-content: space-between; row-gap: 6px; }
   #toolbar .brand, #toolbar .divider { display: none; }
   #algorithm, #target-pattern { flex: 1 1 150px; min-width: 0; }
+  #examples_menu { left: 8px !important; right: 8px; max-width: none; }
   #hud { top: calc(var(--top-h, 96px) + 6px); left: 8px; right: 8px; width: auto; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 12px; }
   #hud .hud-row:first-child { grid-column: 3; grid-row: 1; }
   #hud .hud-time { grid-column: 1; grid-row: 1; }
@@ -293,7 +371,9 @@ kbd { color: var(--text); font-family: var(--mono); font-size: 11.5px; padding: 
   #settings { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 72vh; border-radius: 16px 16px 0 0; z-index: 25; box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.18); }
   .sheet-close { display: inline-flex; }
   #tools { left: 8px; right: 8px; bottom: 8px; flex-direction: row; justify-content: space-between; }
+  #tools .btn { flex: 1 1 0; min-width: 0; padding: 0; } /* ten buttons share the row, however narrow the phone */
   #legend, #settings:not([hidden]) ~ #legend { left: 8px; right: 8px; bottom: 64px; max-width: none; }
+  #turn_caption, #settings:not([hidden]) ~ #turn_caption { left: 8px; right: 8px; bottom: 112px; width: auto; }
   #inspector { top: calc(var(--hud-bottom, 150px) + 6px); left: 8px; right: 8px; width: auto; }
   .menu { right: 8px; bottom: 64px; }
 }
@@ -305,4 +385,27 @@ kbd { color: var(--text); font-family: var(--mono); font-size: 11.5px; padding: 
   #toolbar select { height: 40px; }
   .field select, .field input[type="number"] { height: 36px; }
   input[type="range"] { height: 28px; }
+}
+
+/* Embedded in another page (?embed, see embed.js): the robots and the chosen buttons only. */
+body.embed :is(#settings, #hud, #inspector, #legend, #tools, #overview, #examples_menu, #export_menu, #dirty) { display: none !important; }
+body.embed #toolbar > :is(.brand, #algorithm, #examples, .divider, #toggle_settings, #docs_link, #play, #step_event, #step_time, #reset, #playback) { display: none; }
+body.embed.embed-play #toolbar > #play,
+body.embed.embed-step #toolbar > :is(#step_event, #step_time),
+body.embed.embed-reset #toolbar > #reset,
+body.embed.embed-speed #toolbar > #playback { display: inline-flex; }
+body.embed #toolbar { top: 8px; left: 8px; right: auto; padding: 4px; flex-wrap: nowrap; }
+body.embed #toolbar .label { display: none; }
+/* A finger on the demo scrolls the page around it (the mouse still drags the view). */
+body.embed #canvas { touch-action: pan-x pan-y pinch-zoom; }
+body.embed #turn_caption { left: 8px; bottom: 8px; width: min(440px, calc(100vw - 16px)); padding: 7px 10px; font-size: 12.5px; }
+#embed_open { position: fixed; top: 8px; right: 8px; padding: 6px 10px; font-size: 12px; color: var(--text-2); text-decoration: none; z-index: 6; }
+#embed_open:hover { color: var(--accent); }
+#embed_open.short { padding: 6px 9px; }
+#embed_open.short .long { display: none; }
+#embed_open.gone { visibility: hidden; }
+/* A small box: the caption keeps to its first line, so the robots keep the room. */
+@media (max-height: 360px), (max-width: 340px) {
+  body.embed #turn_caption { padding: 5px 9px; }
+  body.embed #turn_caption .cap-body { display: none; }
 }

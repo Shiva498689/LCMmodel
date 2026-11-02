@@ -1,7 +1,7 @@
 //! LCM algorithms and the registry that names them.
 //!
 //! Each algorithm is a port of the matching `Robot._<name>` method pair
-//! (compute + terminal check) in `robot.py`, keeping its operation order.
+//! (compute + terminal check) in the original simulator, keeping its operation order.
 //! Adding an algorithm: implement [`Algorithm`] in a new module and add one
 //! line to [`REGISTRY`]. An entry builds its [`Plan`] from the run's
 //! [`SimConfig`], so an algorithm can use the seed, the robot count and the
@@ -9,17 +9,24 @@
 //! work with by returning [`ConfigError::Unsupported`].
 //!
 //! Gathering and SEC are ported; they drive the core's parity tests. Uniform
-//! Circle Formation and Pattern Formation are ported too.
+//! Circle Formation, Pattern Formation and Go-To-Center are ported too. SqGathering
+//! (Algorithm 8 of the sequential-schedulers paper) is new: it refuses any scheduler
+//! but the sequential one.
 
 mod circle_formation;
 mod gathering;
+mod go_to_center;
 mod pattern_formation;
 mod sec;
+pub mod sq_gathering;
+pub mod sq_trace;
 
 pub use circle_formation::CircleFormation;
 pub use gathering::Gathering;
+pub use go_to_center::GoToCenter;
 pub use pattern_formation::PatternFormation;
 pub use sec::Sec;
+pub use sq_gathering::SqGathering;
 
 use lcm_core::{Algorithm, ConfigError, Plan, SimConfig, Simulation};
 
@@ -78,7 +85,27 @@ pub const REGISTRY: &[Entry] = &[
         name: "Pattern Formation",
         build: pattern_formation,
     },
+    Entry {
+        key: "GoToCenter",
+        name: "Go To Center",
+        build: one::<GoToCenter>,
+    },
+    Entry {
+        key: "SqGathering",
+        name: "SqGathering",
+        build: sq_gathering::plan,
+    },
 ];
+
+/// What the page should set up before running algorithm `key`, as
+/// `(needs the sequential scheduler, works with multiplicity points)`.
+#[must_use]
+pub fn requirements(key: &str) -> (bool, bool) {
+    match key {
+        "SqGathering" => (true, true),
+        _ => (false, false),
+    }
+}
 
 /// The plan of algorithm `key` for a run with this `config`.
 ///

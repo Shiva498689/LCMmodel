@@ -351,24 +351,65 @@ impl Simulation {
         self.robots.position_at(i, t, self.model.eps)
     }
 
+    /// The time of the next event, if there is one. Read-only, like `arrival_time`.
+    #[must_use]
+    pub fn next_event_time(&self) -> Option<f64> {
+        self.queue.peek().map(|e| e.time)
+    }
+
+    /// When robot `i` arrives, if it is on a move right now: the time its move started plus its
+    /// length over its speed, the same sum `begin_move` schedules the arrival event with. A reader
+    /// of the simulation (the page paces a turn by it); nothing in the run depends on it.
+    #[must_use]
+    pub fn arrival_time(&self, i: usize) -> Option<f64> {
+        let r = &self.robots;
+        let (RobotState::Move, Some(start), Some(goal)) = (r.state[i], r.start_time[i], r.goal(i))
+        else {
+            return None;
+        };
+        let duration = if r.speed[i] > 1e-9 {
+            dist(r.start_pos[i], goal) / r.speed[i]
+        } else {
+            0.0
+        };
+        Some(start + duration.max(0.0))
+    }
+
+    /// The reason the run cannot go on, if it cannot: ended, stalled, out of turns, or at a
+    /// configured limit. The same checks, in the same order, as `advance` makes before each event.
+    fn limit_reached(&self) -> Option<StopReason> {
+        if self.ended {
+            Some(StopReason::Ended)
+        } else if self.stalled {
+            Some(StopReason::Stalled)
+        } else if self.turn_limit {
+            Some(StopReason::MaxTurns)
+        } else if self.max_time.is_some_and(|limit| self.now > limit) {
+            Some(StopReason::MaxTime)
+        } else if self.max_events.is_some_and(|limit| self.events >= limit) {
+            Some(StopReason::MaxEvents)
+        } else {
+            None
+        }
+    }
+
+    /// Handles one event, unless the run has ended or hit a limit.
+    ///
+    /// # Errors
+    /// The reason it cannot go on, as `advance` would report it.
+    pub fn step_checked(&mut self) -> Result<StepInfo, StopReason> {
+        match self.limit_reached() {
+            Some(reason) => Err(reason),
+            None => Ok(self.step()),
+        }
+    }
+
     /// Handles events until the budget, a limit or the end is reached.
     pub fn advance(&mut self, budget: Budget) -> StopReason {
         let mut handled = 0;
         loop {
-            if self.ended {
-                return StopReason::Ended;
-            }
-            if self.stalled {
-                return StopReason::Stalled;
-            }
-            if self.turn_limit {
-                return StopReason::MaxTurns;
-            }
-            if self.max_time.is_some_and(|limit| self.now > limit) {
-                return StopReason::MaxTime;
-            }
-            if self.max_events.is_some_and(|limit| self.events >= limit) {
-                return StopReason::MaxEvents;
+            if let Some(reason) = self.limit_reached() {
+                return reason;
             }
             if handled >= budget.max_events {
                 return StopReason::Budget;

@@ -1,10 +1,10 @@
 //! Uniform Circle Formation: `Robot._circle_formation` / `_circle_terminal`
-//! (Defago & Konagaya 2002; Flocchini et al.), mirroring `robot.py`.
+//! (Defago & Konagaya 2002; Flocchini et al.), mirroring the original simulator.
 //!
 //! Robots arrange at equal angular spacing on a common circle = centroid of the
 //! swarm + mean radius. The reference circle is recomputed from each look, so it
 //! is a smooth, moving target the swarm settles onto (see the note in
-//! `robot.py`: using the live SEC instead makes the centre hop forever).
+//! the original simulator: using the live SEC instead makes the centre hop forever).
 //!   Phase 1: a robot off the circle projects radially onto it.
 //!   Phase 2: a robot on the circle slides tangentially to the angular bisector
 //!            of its two neighbours (local gap-averaging) -> equal spacing.
@@ -213,7 +213,10 @@ mod tests {
         let (o, rad) = reference_circle(&pts);
         assert!(pt_close(o, pt(0.0, 0.25)));
         // distances from (0,0.25): 1.030776, 1.030776, 0.75, 0.25 -> mean 0.765582
-        assert!(close(rad, (1.030_776_406 + 1.030_776_406 + 0.75 + 0.25) / 4.0));
+        assert!(close(
+            rad,
+            (1.030_776_406 + 1.030_776_406 + 0.75 + 0.25) / 4.0
+        ));
     }
 
     // ── closest_on_circle ─────────────────────────────────────────────────────
@@ -329,7 +332,10 @@ mod tests {
     fn a_regular_polygon_terminates_in_place() {
         let pts = regular(6, pt(0.0, 0.0), 20.0);
         let d = decide(&pts, 0);
-        assert!(d.terminate, "a regular polygon is already a uniform formation");
+        assert!(
+            d.terminate,
+            "a regular polygon is already a uniform formation"
+        );
         assert!(matches!(d.overlay, OverlayUpdate::Set(_)));
     }
 
@@ -347,11 +353,18 @@ mod tests {
         let on = |a: f64| pt(r * a.cos(), r * a.sin());
         let pts = vec![on(deg(0.0)), on(deg(180.0)), on(deg(50.0)), on(deg(230.0))];
         let (o, rad) = reference_circle(&pts);
-        assert!(pt_close(o, pt(0.0, 0.0)) && close(rad, 1.0), "setup not on circle");
+        assert!(
+            pt_close(o, pt(0.0, 0.0)) && close(rad, 1.0),
+            "setup not on circle"
+        );
         let d = decide(&pts, 0);
 
         // (a) stays on the reference circle.
-        assert!(close(dist(d.target, o), rad), "left the circle: {:?}", d.target);
+        assert!(
+            close(dist(d.target, o), rad),
+            "left the circle: {:?}",
+            d.target
+        );
 
         // (b) sits on the bisector: equal angular gap to nearest neighbour each way.
         let ang = |p: Point| libm::atan2(p.y - o.y, p.x - o.x);
