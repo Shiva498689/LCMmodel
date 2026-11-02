@@ -928,7 +928,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:97`](../crates/lcm-wasm/src/lib.rs#L97)
+`advance` — [`crates/lcm-wasm/src/lib.rs:109`](../crates/lcm-wasm/src/lib.rs#L109)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -983,7 +983,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:330`](../crates/lcm-wasm/src/lib.rs#L330)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:342`](../crates/lcm-wasm/src/lib.rs#L342)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the

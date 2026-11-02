@@ -278,6 +278,15 @@ $("examples_menu").addEventListener("keydown", (e) => {
 client.on("ready", ({ algorithms: list, patterns }) => {
   algorithms = list;
   $("algorithm").innerHTML = list.map((a) => `<option value="${a.key}">${a.name}</option>`).join("");
+  const asked = list.find((a) => a.key === link.algorithm);
+  if (asked) {
+    $("algorithm").value = asked.key;
+    if (asked.sequential_only) settings.set("scheduler", "sequential", false);
+  }
+  updateExamples();
+  updatePlaybackOptions();
+  const speed = link.speed === "max" ? "Infinity" : link.speed;
+  if (speed && [...$("playback").options].some((o) => o.value === speed)) $("playback").value = speed;
   // Pattern Formation's shape list (default star); shown only while it is the chosen algorithm.
   $("target-pattern").innerHTML = (patterns ?? []).map((p) => `<option value="${p.key}">${p.name}</option>`).join("");
   syncPatternVisibility();
@@ -529,9 +538,33 @@ $("play").addEventListener("click", play);
 $("step_event").addEventListener("click", () => step("event"));
 $("step_time").addEventListener("click", () => step("time"));
 $("reset").addEventListener("click", () => newRun());
-$("algorithm").addEventListener("change", () => { syncPatternVisibility(); onSettingChange(); });
+$("algorithm").addEventListener("change", () => {
+  syncPatternVisibility(); // show/hide the Pattern Formation shape list
+  updateExamples();
+  syncAddress();
+  // An algorithm that only works under the sequential scheduler (SqGathering)
+  // switches it on, rather than failing with the async default.
+  const a = algorithms.find((x) => x.key === $("algorithm").value);
+  if (a?.sequential_only && settings.values.scheduler !== "sequential") {
+    settings.set("scheduler", "sequential", false);
+    toast(`${a.name} runs one robot at a time: Scheduler set to Sequential`);
+  }
+  // A new algorithm is a new experiment: start it now, even mid-run.
+  if (state === "loading") return;
+  if (state === "ready") onSettingChange();
+  else newRun();
+});
 $("target-pattern").addEventListener("change", onSettingChange);
-$("playback").addEventListener("change", (e) => client.speed(Number(e.target.value)));
+$("playback").addEventListener("change", () => {
+  syncAddress();
+  const speed = playbackSpeed();
+  client.speed(speed);
+  if (typeof speed !== "object") {  // not played a turn at a time any more: drop the turn caption and marks at once
+    $("turn_caption").hidden = true;
+    renderer.options.walk = null;
+    renderer.requestDraw();
+  }
+});
 $("defaults").addEventListener("click", () => settings.reset());
 $("toggle_settings").addEventListener("click", toggleSettings);
 $("close_settings").addEventListener("click", toggleSettings);
