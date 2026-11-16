@@ -252,3 +252,48 @@ fn star_like(n: usize) -> Vec<[f64; 2]> {
         })
         .collect()
 }
+
+#[test]
+fn custom_points_are_formed_one_robot_per_point() {
+    // An arrow of 7 user points for 7 robots: every point ends up occupied
+    // (up to translation and scale), under both schedulers.
+    let given = [[0.0, 0.0], [4.0, 0.0], [8.0, 0.0], [6.0, 2.0], [6.0, -2.0], [2.0, 0.5], [2.0, -0.5]];
+    let given_pts: Vec<Point> = given.iter().map(|p| Point::new(p[0], p[1])).collect();
+    let (unit, m) = lcm_algorithms::pattern_template(PatternShape::Star, Some(&given_pts), 7);
+    assert_eq!((unit.len(), m), (7, 7));
+
+    for seq in [false, true] {
+        let mut config = SimConfig {
+            num_of_robots: 7,
+            random_seed: 3,
+            target_points: Some(given.to_vec()),
+            ..pat_cfg()
+        };
+        if seq {
+            config = sequential(config);
+        }
+        let sim = run_to_end(&config);
+        assert!(sim.ended(), "custom pattern did not converge (seq={seq})");
+        let pts = live_positions(&sim);
+        let n = pts.len() as f64;
+        let (cx, cy) = (pts.iter().map(|p| p.x).sum::<f64>() / n, pts.iter().map(|p| p.y).sum::<f64>() / n);
+        let r = rms_radius(&pts);
+        for (k, u) in unit.iter().enumerate() {
+            let t = Point::new(cx + r * u.x, cy + r * u.y);
+            assert!(pts.iter().any(|p| (p.x - t.x).hypot(p.y - t.y) < 1e-3 * r), "point {k} not occupied (seq={seq})");
+        }
+    }
+}
+
+#[test]
+fn custom_points_must_match_the_robot_count() {
+    for robots in [2, 4] {
+        let config = SimConfig {
+            algorithm: "PatternFormation".to_owned(),
+            num_of_robots: robots,
+            target_points: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            ..SimConfig::default()
+        };
+        assert!(simulation(&config).is_err(), "{robots} robots for 3 points must be refused");
+    }
+}

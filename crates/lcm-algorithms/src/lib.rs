@@ -24,11 +24,11 @@ pub mod sq_trace;
 pub use circle_formation::CircleFormation;
 pub use gathering::Gathering;
 pub use go_to_center::GoToCenter;
-pub use pattern_formation::PatternFormation;
+pub use pattern_formation::{template as pattern_template, PatternFormation};
 pub use sec::Sec;
 pub use sq_gathering::SqGathering;
 
-use lcm_core::{Algorithm, ConfigError, Plan, SimConfig, Simulation};
+use lcm_core::{Algorithm, ConfigError, Plan, Point, SimConfig, Simulation};
 
 /// A selectable entry: key (as sent by the UI), display name, plan builder.
 pub struct Entry {
@@ -46,6 +46,10 @@ fn one<A: Algorithm + Default + 'static>(_: &SimConfig) -> Result<Plan, ConfigEr
 fn pattern_formation(config: &SimConfig) -> Result<Plan, ConfigError> {
     Ok(Plan::single(Box::new(PatternFormation {
         shape: config.target_pattern,
+        custom: config
+            .target_points
+            .as_ref()
+            .map(|pts| pts.iter().map(|p| Point::new(p[0], p[1])).collect()),
     })))
 }
 

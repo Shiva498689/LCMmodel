@@ -24,10 +24,12 @@ use core::f64::consts::PI;
 use lcm_core::geom::{dist, Point};
 use lcm_core::{Algorithm, Decision, Look, OverlayUpdate, PatternShape, Rng, RobotState, Scratch};
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PatternFormation {
     /// Which predefined shape to form. Defaults to the 5-pointed star.
     pub shape: PatternShape,
+    /// A user-given pattern (`SimConfig::target_points`); overrides `shape`.
+    pub custom: Option<Vec<Point>>,
 }
 
 impl Algorithm for PatternFormation {
@@ -91,11 +93,32 @@ impl Algorithm for PatternFormation {
         };
 
         // Target points: the normalised template of the chosen shape, placed in the frame.
-        let unit = pattern_unit_points(self.shape, n);
+        let unit = template(self.shape, self.custom.as_deref(), n).0;
         let targets: Vec<Point> = unit
             .iter()
             .map(|u| Point::new(ox + r * u.x, oy + r * u.y))
             .collect();
+
+        // A custom pattern has no angular order that is sure to stay put while
+        // robots move (points at equal angles, or nested at different radii), so the angular matching below can cycle forever.
+        // Match by globally nearest pairs instead: every robot computes the same
+        // assignment from the same snapshot, and once each robot is near its slot the
+        // assignment no longer changes.
+        if self.custom.is_some() {
+            let assign = nearest_pairs(&scratch.points, &scratch.indices, &targets);
+            let mut err = 0.0_f64;
+            for (i, &t) in assign.iter().enumerate() {
+                err = err.max(dist(scratch.points[i], targets[t]));
+            }
+            return Decision {
+                target: targets[assign[my_idx]],
+                // Much tighter than the shapes' 3%: a robot that stops for good keeps
+                // its place while the frame still drifts with the others, so a loose
+                // tolerance leaves the finished pattern visibly bent.
+                terminate: err < (r * 1e-3).max(eps),
+                overlay: OverlayUpdate::Keep,
+            };
+        }
 
         // Angle (and radius) about the centroid, used as the sort key.
         let angle_radius = |p: &Point| (libm::atan2(p.y - oy, p.x - ox), libm::hypot(p.x - ox, p.y - oy));
@@ -228,6 +251,114 @@ fn pattern_unit_points(shape: PatternShape, n: usize) -> Vec<Point> {
         PatternShape::Line => normalise(sample_open(&line_outline(), n)),
         PatternShape::Cross => normalise(sample_closed(&cross_outline(), n)),
         PatternShape::Heart => normalise(sample_closed(&heart_outline(), n)),
+    }
+}
+
+/// Candidate targets per robot in a round of [`nearest_pairs`].
+const CANDIDATES: usize = 8;
+
+/// Greedy matching by nearest pairs: pair the closest free robot and free
+/// target first (ties by robot id, then target index). To stay fast for
+/// thousands of robots each round only considers every unmatched robot's
+/// `CANDIDATES` nearest free targets; robots whose candidates were all taken
+/// try again in the next round, and once only a few remain they consider every
+/// free target. The result depends only on the snapshot, so every robot
+/// computes the same assignment, and once each robot is near its own target
+/// that target is its nearest and the assignment no longer changes.
+/// Returns each robot's target.
+fn nearest_pairs(robots: &[Point], ids: &[usize], targets: &[Point]) -> Vec<usize> {
+    let n = robots.len();
+    let mut assign = vec![usize::MAX; n];
+    let mut taken = vec![false; targets.len()];
+    let mut waiting: Vec<usize> = (0..n).collect();
+    let d2 = |i: usize, k: usize| {
+        let (dx, dy) = (robots[i].x - targets[k].x, robots[i].y - targets[k].y);
+        dx * dx + dy * dy
+    };
+    let by_pair = |a: &(f64, usize, usize), b: &(f64, usize, usize)| {
+        a.0.partial_cmp(&b.0)
+            .unwrap()
+            .then(ids[a.1].cmp(&ids[b.1]))
+            .then(a.2.cmp(&b.2))
+    };
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    let mut near: Vec<(f64, usize, usize)> = Vec::with_capacity(CANDIDATES + 1);
+    while !waiting.is_empty() {
+        let free: Vec<usize> = (0..targets.len()).filter(|&k| !taken[k]).collect();
+        let all = waiting.len() <= 4 * CANDIDATES || free.len() <= CANDIDATES;
+        pairs.clear();
+        for &i in &waiting {
+            if all {
+                pairs.extend(free.iter().map(|&k| (d2(i, k), i, k)));
+                continue;
+            }
+            // This robot's CANDIDATES nearest free targets (kept sorted, smallest first).
+            near.clear();
+            for &k in &free {
+                let d = d2(i, k);
+                // Cheap reject first; only an exact tie needs the full ordering.
+                if near.len() == CANDIDATES && d > near[CANDIDATES - 1].0 {
+                    continue;
+                }
+                let c = (d, i, k);
+                if near.len() == CANDIDATES && by_pair(&c, &near[CANDIDATES - 1]).is_ge() {
+                    continue;
+                }
+                let at = near.partition_point(|x| by_pair(x, &c).is_lt());
+                near.insert(at, c);
+                near.truncate(CANDIDATES);
+            }
+            pairs.extend_from_slice(&near);
+        }
+        pairs.sort_by(by_pair);
+        for &(_, i, k) in &pairs {
+            if assign[i] == usize::MAX && !taken[k] {
+                assign[i] = k;
+                taken[k] = true;
+            }
+        }
+        waiting.retain(|&i| assign[i] == usize::MAX);
+    }
+    // Greedy alone can hand a robot a far target when its near ones were taken a
+    // moment earlier, and a tiny change in the snapshot then reshuffles that
+    // chain. Swapping pairs while it lowers their total squared distance makes
+    // the assignment locally optimal, which moves smoothly with the robots.
+    // Pairs are visited in a fixed order, so every robot gets the same result.
+    // Near the goal the greedy result is already almost optimal and one pass
+    // finds nothing to swap.
+    for _ in 0..SWAP_PASSES {
+        let mut swapped = false;
+        for i in 0..n {
+            for j in i + 1..n {
+                let (a, b) = (assign[i], assign[j]);
+                if d2(i, b) + d2(j, a) < d2(i, a) + d2(j, b) - 1e-12 {
+                    assign.swap(i, j);
+                    swapped = true;
+                }
+            }
+        }
+        if !swapped {
+            break;
+        }
+    }
+    assign
+}
+
+/// Upper bound on the improving-swap passes in [`nearest_pairs`].
+const SWAP_PASSES: usize = 16;
+
+/// The normalised template for `n` robots and how many of its points are
+/// the pattern's own (all of them). A custom pattern has one point per robot
+/// (`SimConfig::validate`); if robots have crashed, the first `n` points are
+/// used. Exposed for the page, which draws the pattern from it.
+#[must_use]
+pub fn template(shape: PatternShape, custom: Option<&[Point]>, n: usize) -> (Vec<Point>, usize) {
+    match custom.filter(|c| !c.is_empty()) {
+        Some(custom) => {
+            let pts: Vec<Point> = custom.iter().copied().cycle().take(n).collect();
+            (normalise(pts), n)
+        }
+        None => (pattern_unit_points(shape, n), n),
     }
 }
 
@@ -516,7 +647,7 @@ mod tests {
             let look = Look { me: 0, me_index: 0, position: pts[0], view: &view, model: &m };
             let mut rng = Rng::new(1);
             let mut scratch = Scratch::default();
-            PatternFormation { shape }.compute(&look, &mut rng, &mut scratch).target
+            PatternFormation { shape, custom: None }.compute(&look, &mut rng, &mut scratch).target
         };
         let star = look_for(PatternShape::Star);
         let square = look_for(PatternShape::Square);
@@ -576,3 +707,4 @@ mod tests {
         assert!(dc <= r + 1e-6, "target outside the frame: {dc} > {r}");
     }
 }
+
