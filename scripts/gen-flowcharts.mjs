@@ -697,7 +697,7 @@ const lstrip = (s) => s.replace(/^\s+/, "");
  *  doc comments above it. Relies on the formatter putting a function's closing
  *  brace at the indentation of its first line. */
 function extract(file, name) {
-  const lines = fs.readFileSync(path.join(ROOT, file), "utf-8").split("\n");
+  const lines = fs.readFileSync(path.join(ROOT, file), "utf-8").split(/\r?\n/); // CRLF on a Windows checkout
   const start = file.endsWith(".rs")
     ? new RegExp(`^\\s*(pub(\\([a-z]+\\))? )?(const )?fn ${reEscape(name)}\\b`)
     : new RegExp(`^\\s*(export )?(async )?(function )?${reEscape(name)}\\s*\\(.*\\)\\s*\\{\\s*$`);
@@ -1196,7 +1196,7 @@ function main() {
   const stale = [];
   for (const [file, text] of Object.entries(outputs)) {
     const full = path.join(ROOT, file);
-    const current = fs.existsSync(full) ? fs.readFileSync(full, "utf-8") : null;
+    const current = fs.existsSync(full) ? fs.readFileSync(full, "utf-8").replace(/\r\n/g, "\n") : null; // CRLF on a Windows checkout
     if (check) {
       if (current !== text) stale.push(file);
     } else {

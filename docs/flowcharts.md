@@ -898,7 +898,7 @@ requestFrame() {
 }
 ```
 
-`slice` — [`web/worker.js:179`](../web/worker.js#L179)
+`slice` — [`web/worker.js:180`](../web/worker.js#L180)
 
 ```js
 function slice(gen) {
@@ -928,7 +928,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:109`](../crates/lcm-wasm/src/lib.rs#L109)
+`advance` — [`crates/lcm-wasm/src/lib.rs:134`](../crates/lcm-wasm/src/lib.rs#L134)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -944,7 +944,7 @@ pub fn advance(&mut self, max_events: u32, until_time: f64) -> Stop {
 }
 ```
 
-`postFrame` — [`web/worker.js:213`](../web/worker.js#L213)
+`postFrame` — [`web/worker.js:214`](../web/worker.js#L214)
 
 ```js
 function postFrame(extra = {}) {
@@ -953,6 +953,17 @@ function postFrame(extra = {}) {
   spare = null;
   sim.fill_frame(b.xy, b.flags, b.light, b.fault, b.task, b.target, b.circle);
   const now = performance.now();
+  // Pattern Formation: the template for the robots still running, so the page can draw the pattern.
+  let pattern = null;
+  if (patternConfig) {
+    let live = 0;
+    for (let i = 0; i < n; i++) if ((b.flags[i] & 3) !== 3) live++;
+    if (!patternCache || patternCache.live !== live) {
+      const t = wasm.pattern_template(patternConfig, live);
+      patternCache = { live, m: t[0], unit: Array.from(t.subarray(1)), closed: patternClosed };
+    }
+    pattern = patternCache;
+  }
   self.postMessage({
     type: "frame",
     run,
@@ -975,6 +986,7 @@ function postFrame(extra = {}) {
     stop,
     playing,
     busy: sinceMs ? Math.min(1, busyMs / (now - sinceMs)) : 0,
+    pattern,
     ...extra,
     ...b,
   }, Object.values(b).map((a) => a.buffer));
@@ -983,7 +995,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:342`](../crates/lcm-wasm/src/lib.rs#L342)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:367`](../crates/lcm-wasm/src/lib.rs#L367)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1012,7 +1024,7 @@ pub fn fill_frame(
 }
 ```
 
-`draw` — [`web/renderer.js:462`](../web/renderer.js#L462)
+`draw` — [`web/renderer.js:560`](../web/renderer.js#L560)
 
 ```js
 draw(ctx = this.ctx, dpr = this.dpr) {
@@ -1021,6 +1033,11 @@ draw(ctx = this.ctx, dpr = this.dpr) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = this.theme.bg;
   ctx.fillRect(0, 0, this.width, this.height);
+  // A turned view: everything below is drawn turned about the pivot (the next draw resets this).
+  if (this.rotation) {
+    const [px, py] = this.pivot;
+    ctx.translate(px, py); ctx.rotate(this.turn); ctx.translate(-px, -py);
+  }
 
   if (this.follow && frame) this.stepFollow();
   const s = this.scale;
@@ -1147,6 +1164,37 @@ draw(ctx = this.ctx, dpr = this.dpr) {
     ctx.lineWidth = 1;
   }
 
+  // Pattern Formation: the pattern embedded in the swarm's own frame (centroid, RMS radius), as the
+  // robots compute it, and which robots sit on its points or on a parking spot for left-over robots.
+  const pat = frame.pattern ? this.patternOverlay(frame) : null;
+  this.patternStats = pat ? { reached: pat.reached, omitted: pat.omitted, points: pat.m } : null;
+  if (pat) {
+    const { pts, m } = pat;
+    ctx.save();
+    ctx.strokeStyle = PATTERN_COLORS.line; ctx.lineWidth = 2.5; ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let k = 0; k < m; k++) {
+      const x = X(pts[2 * k]), y = Y(pts[2 * k + 1]);
+      if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    if (frame.pattern.closed && m > 2) ctx.closePath();
+    ctx.stroke();
+    // Pattern points: hollow dark-yellow squares; parking spots: hollow pink diamonds (one path each).
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = PATTERN_COLORS.line;
+    ctx.beginPath();
+    for (let k = 0; k < m; k++) { const x = X(pts[2 * k]), y = Y(pts[2 * k + 1]); ctx.rect(x - 4, y - 4, 8, 8); }
+    ctx.stroke();
+    ctx.strokeStyle = PATTERN_COLORS.omitted;
+    ctx.beginPath();
+    for (let k = m; k < pts.length / 2; k++) {
+      const x = X(pts[2 * k]), y = Y(pts[2 * k + 1]);
+      ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 6); ctx.lineTo(x - 6, y); ctx.closePath();
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Dashed line from each moving robot to its target, in the robot's colour.
   if (n <= LOD.targets) {
     ctx.setLineDash([2, 3]);
@@ -1182,6 +1230,25 @@ draw(ctx = this.ctx, dpr = this.dpr) {
         if (colorOf[i] === c) ctx.drawImage(sp.canvas, snap(X(xy[2 * i]) - sp.half), snap(Y(xy[2 * i + 1]) - sp.half), sp.size, sp.size);
       }
     }
+  }
+
+  // Pattern Formation: a yellow halo on robots that reached a pattern point, a pink ring on the left-over ones.
+  if (pat) {
+    ctx.save();
+    ctx.lineWidth = 3;
+    const ringR = Math.max(r, 3) + 4;
+    for (const [color, onPattern] of [[PATTERN_COLORS.reached, true], [PATTERN_COLORS.omitted, false]]) {
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const k = pat.slot[i];
+        if (k < 0 || (k < pat.m) !== onPattern) continue;
+        const x = X(xy[2 * i]), y = Y(xy[2 * i + 1]);
+        ctx.moveTo(x + ringR, y); ctx.arc(x, y, ringR, 0, 2 * Math.PI);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Luminous-robot lights: a ring in the light's colour.
@@ -2086,7 +2153,7 @@ flowchart TD
 | Terminate | The robot stops for good; the formation is complete. |
 | Walk to my mark | The mark becomes the robot's target; chart 2 takes over (freeze check, then the move). Next time it wakes, it does all of this again. |
 
-`compute` — [`crates/lcm-algorithms/src/pattern_formation.rs:38`](../crates/lcm-algorithms/src/pattern_formation.rs#L38)
+`compute` — [`crates/lcm-algorithms/src/pattern_formation.rs:40`](../crates/lcm-algorithms/src/pattern_formation.rs#L40)
 
 ```rust
 #[allow(clippy::cast_precision_loss)]
@@ -2145,11 +2212,32 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, scratch: &mut Scratch) -> Decisi
     };
 
     // Target points: the normalised template of the chosen shape, placed in the frame.
-    let unit = pattern_unit_points(self.shape, n);
+    let unit = template(self.shape, self.custom.as_deref(), n).0;
     let targets: Vec<Point> = unit
         .iter()
         .map(|u| Point::new(ox + r * u.x, oy + r * u.y))
         .collect();
+
+    // A custom pattern has no angular order that is sure to stay put while
+    // robots move (points at equal angles, or nested at different radii), so the angular matching below can cycle forever.
+    // Match by globally nearest pairs instead: every robot computes the same
+    // assignment from the same snapshot, and once each robot is near its slot the
+    // assignment no longer changes.
+    if self.custom.is_some() {
+        let assign = nearest_pairs(&scratch.points, &scratch.indices, &targets);
+        let mut err = 0.0_f64;
+        for (i, &t) in assign.iter().enumerate() {
+            err = err.max(dist(scratch.points[i], targets[t]));
+        }
+        return Decision {
+            target: targets[assign[my_idx]],
+            // Much tighter than the shapes' 3%: a robot that stops for good keeps
+            // its place while the frame still drifts with the others, so a loose
+            // tolerance leaves the finished pattern visibly bent.
+            terminate: err < (r * 1e-3).max(eps),
+            overlay: OverlayUpdate::Keep,
+        };
+    }
 
     // Angle (and radius) about the centroid, used as the sort key.
     let angle_radius = |p: &Point| (libm::atan2(p.y - oy, p.x - ox), libm::hypot(p.x - ox, p.y - oy));
@@ -2208,7 +2296,7 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, scratch: &mut Scratch) -> Decisi
 }
 ```
 
-`pattern_unit_points` — [`crates/lcm-algorithms/src/pattern_formation.rs:215`](../crates/lcm-algorithms/src/pattern_formation.rs#L215)
+`pattern_unit_points` — [`crates/lcm-algorithms/src/pattern_formation.rs:238`](../crates/lcm-algorithms/src/pattern_formation.rs#L238)
 
 ```rust
 /// The normalised template (zero centroid, unit RMS radius) of `shape`, as `n`

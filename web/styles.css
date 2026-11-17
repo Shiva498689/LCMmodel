@@ -287,6 +287,8 @@ a.btn { text-decoration: none; }
 /* scale bar in the status panel */
 #hud .scale { display: inline-flex; align-items: center; gap: 8px; }
 #hud .zoomgauge { display: inline-flex; align-items: center; gap: 4px; }
+/* Zoom + and − live in the view tools (one place only); the status panel keeps the gauge. */
+#hud_zoom_in, #hud_zoom_out { display: none; }
 #hud .zoombtn { width: 20px; height: 20px; min-width: 20px; padding: 0; border: 1px solid var(--border-strong); border-radius: 6px; }
 #hud_zoom { min-width: 48px; text-align: right; }
 #hud_zoom_meter { position: relative; display: inline-block; width: 40px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--surface-2);
