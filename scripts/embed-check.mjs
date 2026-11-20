@@ -73,7 +73,7 @@ await navigate(`${base}/?algorithm=NoSuchThing&robots=banana&speed=7`);
 await until("!!window.lcm", 10000);
 await js("window.lcm.ready");
 check("link: unknown or bad values fall back to the defaults",
-  (await js("window.lcm.state")) === "ready" && (await js("window.lcm.settings.values.num_of_robots")) === 500 && (await js("document.getElementById('playback').value")) === "20");
+  (await js("window.lcm.state")) === "ready" && (await js("window.lcm.settings.values.num_of_robots")) === 500 && (await js("document.getElementById('playback').value")) === "10");
 
 // ── links made by the page ─────────────────────────────────────────────────
 // "Copy link to this case" gives a link that opens the same case: every setting, the algorithm, the
@@ -129,7 +129,7 @@ await js("window.lcm.ready");
 check("address bar: reloading the page keeps the case",
   (await js("document.getElementById('playback').value")) === "100" && (await js("window.lcm.settings.values.num_of_robots")) === 35 && (await js("window.lcm.renderer.frame.flags.length")) === 35);
 await js(`window.lcm.settings.reset()`);
-await js(`(() => { const s = document.getElementById("playback"); s.value = "20"; s.dispatchEvent(new Event("change")); })()`);
+await js(`(() => { const s = document.getElementById("playback"); s.value = "10"; s.dispatchEvent(new Event("change")); })()`);
 check("address bar: back to the defaults, it is the plain address again", await until("location.search === ''", 3000), await js("location.search"));
 
 // "Embed in a web page…": the iframe code for the current case, with the buttons and size chosen.
@@ -290,8 +290,8 @@ for (const [id, algorithm, robots] of DEMOS) {
   await sleep(4000);
   await shot(`embed-${algorithm}`);
   const got = await js(`({ algorithm: ${w}.document.getElementById("algorithm").value, playback: ${w}.document.getElementById("playback").value, robots: ${w}.lcm.renderer.frame.flags.length, time: ${w}.lcm.stats.time, state: ${w}.lcm.state })`);
-  check(`embed: the ${algorithm} demo starts when scrolled to and runs ${robots} robots (at 20× unless its link says)`,
-    going && got.algorithm === algorithm && got.robots === robots && got.time > 0 && got.playback === (algorithm === "GoToCenter" || algorithm === "SqGathering" ? "turn:1" : "20"), JSON.stringify(got));
+  check(`embed: the ${algorithm} demo starts when scrolled to and runs ${robots} robots (at 10× unless its link says)`,
+    going && got.algorithm === algorithm && got.robots === robots && got.time > 0 && got.playback === (algorithm === "GoToCenter" || algorithm === "SqGathering" ? "turn:1" : "10"), JSON.stringify(got));
 }
 
 // Played to the end (fast), every demo still shows all its robots and circles, around the middle of its box.
