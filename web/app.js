@@ -202,7 +202,7 @@ function updatePlaybackOptions() {
     select.classList.remove("has-turns");
     const wasTurn = select.value.startsWith("turn:");
     select.querySelector("optgroup")?.remove();
-    if (wasTurn) { select.value = "20"; client.speed(20); }
+    if (wasTurn) { select.value = "10"; client.speed(10); }
   }
 }
 

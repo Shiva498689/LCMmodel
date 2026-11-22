@@ -652,13 +652,13 @@ await click("#play");
 const sameTurn = tiny.filter((t, i) => i && t.turns === tiny[i - 1].turns && t.g !== tiny[i - 1].g).length;
 check("a late turn, with the robots less than 0.01 apart, still takes its time on screen and glides", tiny[0].g < 0.01 && !tiny[0].ended && sameTurn >= 2, JSON.stringify(tiny));
 
-// Leaving the sequential scheduler takes the per-turn speeds away and falls back to 20×.
+// Leaving the sequential scheduler takes the per-turn speeds away and falls back to 10×.
 await click("#reset");  // a paused run only notes a changed setting; Reset starts the new one, as a user would
 await setPlayback("turn:1");
 await js("lcm.settings.apply({ scheduler: 'async' })");
 await until("lcm.state === 'ready' && lcm.renderer.frame.turns == null && document.getElementById('hud_epochs_row').hidden && !document.querySelector('#playback option[value^=\"turn:\"]')", 4000);
 const afterAsync = await js("({ value: document.getElementById('playback').value, turnOptions: document.querySelectorAll('#playback option[value^=\"turn:\"]').length, rowHidden: document.getElementById('hud_epochs_row').hidden })");
-check("with the asynchronous scheduler the per-turn speeds go away and playback falls back to 20×", afterAsync.value === "20" && afterAsync.turnOptions === 0 && afterAsync.rowHidden, JSON.stringify(afterAsync));
+check("with the asynchronous scheduler the per-turn speeds go away and playback falls back to 10×", afterAsync.value === "10" && afterAsync.turnOptions === 0 && afterAsync.rowHidden, JSON.stringify(afterAsync));
 await click("#reset");
 await js("lcm.settings.reset()");
 await until("lcm.state === 'ready' && lcm.settings.values.pattern === 'cloud' && lcm.renderer.frame.flags.length === 500", 3000);

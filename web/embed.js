@@ -114,7 +114,7 @@ export function linkQuery({ values, algorithm, playback, points }) {
     parts.push([SHORT[s.key] ?? s.key, s.kind === "switch" ? (v ? "1" : "0") : String(v)]);
   }
   if (custom) parts.push(["points", points.map(([x, y]) => `${x},${y}`).join(";")]);
-  if (playback && playback !== "20") parts.push(["speed", playback === "Infinity" ? "max" : playback]);
+  if (playback && playback !== "10") parts.push(["speed", playback === "Infinity" ? "max" : playback]);
   // Commas, semicolons and colons are left as they are, so the link stays readable.
   return parts.map(([k, v]) => `${k}=${encodeURIComponent(v).replace(/%2C/g, ",").replace(/%3B/g, ";").replace(/%3A/g, ":")}`).join("&");
 }
