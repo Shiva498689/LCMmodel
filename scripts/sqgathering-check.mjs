@@ -172,6 +172,10 @@ const formed = await until("window.lcm.state === 'ended'", 90000);
 check("simulator: SqPF ends with the pattern formed and says so",
   formed && (await js("/Formed/.test(document.getElementById('hud_status').textContent)")),
   await js("document.getElementById('hud_status').textContent"));
+check("simulator: the formed shape is drawn, joining the pattern points, every robot on one",
+  await js(`(() => { const f = window.lcm.renderer.frame, s = window.lcm.renderer.patternStats;
+    return !!(f.pattern && f.pattern.world && f.pattern.m === 5 && s && s.reached === f.robots); })()`),
+  await js("JSON.stringify(window.lcm.renderer.patternStats)"));
 await shot("sim-sqpf-formed");
 
 // ── layout ───────────────────────────────────────────────────────────────

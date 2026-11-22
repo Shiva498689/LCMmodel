@@ -150,6 +150,20 @@ impl WasmSimulation {
         })
     }
 
+    /// Sequential Pattern Formation, once the pattern is formed: its points
+    /// where the robots stand, as `[x0, y0, x1, y1, …]` in world coordinates and
+    /// in the order the pattern was given, so the page can join them into the
+    /// shape. Empty while it is not formed, and for any other algorithm.
+    #[must_use]
+    pub fn formed_pattern(&self) -> Vec<f64> {
+        self.pattern
+            .as_ref()
+            .and_then(|p| {
+                lcm_algorithms::sq_pattern_formation::formed_placement(p, &self.sim.robots().pos)
+            })
+            .map_or_else(Vec::new, |pts| pts.iter().flat_map(|q| [q.x, q.y]).collect())
+    }
+
     /// Handles up to `max_events` events, stopping early before the first
     /// event after `until_time`, at a configured limit, or at the end.
     pub fn advance(&mut self, max_events: u32, until_time: f64) -> Stop {

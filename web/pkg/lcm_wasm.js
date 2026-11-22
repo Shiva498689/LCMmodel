@@ -159,6 +159,19 @@ export class WasmSimulation {
         return ret;
     }
     /**
+     * Sequential Pattern Formation, once the pattern is formed: its points
+     * where the robots stand, as `[x0, y0, x1, y1, …]` in world coordinates and
+     * in the order the pattern was given, so the page can join them into the
+     * shape. Empty while it is not formed, and for any other algorithm.
+     * @returns {Float64Array}
+     */
+    formed_pattern() {
+        const ret = wasm.wasmsimulation_formed_pattern(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * World coordinates the frame's positions, targets and circle centres are
      * measured from (a robot's world position is origin + offset, added in f64).
      * @returns {number}

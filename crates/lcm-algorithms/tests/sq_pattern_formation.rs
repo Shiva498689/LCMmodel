@@ -10,7 +10,7 @@ use core::f64::consts::TAU;
 
 use lcm_algorithms::sq_gathering::LocalFrame;
 use lcm_algorithms::sq_pattern_formation::{
-    compasses, destination, is_formed, pattern_of, shape_points, snapshot, Pattern, Step, KEY,
+    compasses, destination, formed_placement, is_formed, pattern_of, shape_points, snapshot, Pattern, Step, KEY,
 };
 use lcm_core::geom::dist;
 use lcm_core::{
@@ -150,6 +150,34 @@ fn a_formed_pattern_never_moves() {
                 assert!(matches!(step, Step::Formed | Step::PrimeFormed), "{shape:?}: {step:?}");
             }
         }
+    }
+}
+
+#[test]
+fn the_formed_shape_is_reported_in_the_patterns_own_order() {
+    // What the page joins into the outline: the pattern's points where the robots stand, in
+    // the order the pattern was given, i.e. a scaled, rotated or mirrored copy of P̂ point by
+    // point (for a symmetric pattern the copy may start at another corner: the same outline).
+    // Robots: P̂ reflected and scaled, one corner stacked (n > k).
+    for pts in [shape_points(PatternShape::Pentagon), random_cloud(7, 5)] {
+        let pat = Pattern::new(&pts).unwrap();
+        let place = |q: &Point| p(7.0 + 2.0 * q.y, 3.0 + 2.0 * q.x); // swap x and y: a reflection
+        let mut world: Vec<Point> = pts.iter().map(place).collect();
+        world.push(world[2]);
+        let got = formed_placement(&pat, &world).expect("formed");
+        assert_eq!(got.len(), pts.len());
+        for g in &got {
+            assert!(world.iter().any(|w| dist(*g, *w) < 1e-6), "every drawn point holds a robot");
+        }
+        let ratio = dist(got[0], got[1]) / dist(pts[0], pts[1]);
+        for i in 0..pts.len() {
+            for j in 0..pts.len() {
+                let (a, b) = (dist(got[i], got[j]), ratio * dist(pts[i], pts[j]));
+                assert!((a - b).abs() < 1e-6 * b.max(1.0), "points {i}, {j} not in the pattern's order");
+            }
+        }
+        world[0].x += 5.0;
+        assert!(formed_placement(&pat, &world).is_none(), "not formed: nothing to draw");
     }
 }
 

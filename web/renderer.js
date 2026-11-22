@@ -472,6 +472,7 @@ export class Renderer {
    * 3% of the radius, the algorithm's own termination tolerance; -1 while it is on none.
    */
   patternOverlay(frame) {
+    if (frame.pattern.world) return this.formedOverlay(frame);
     const { xy, flags } = frame, { unit, m } = frame.pattern, n = flags.length;
     let cx = 0, cy = 0, live = 0;
     for (let i = 0; i < n; i++) if ((flags[i] & 3) !== STATE_CRASH) { cx += xy[2 * i]; cy += xy[2 * i + 1]; live++; }
@@ -513,6 +514,27 @@ export class Renderer {
       if (best < m) reached++; else omitted++;
     }
     return { pts, m, slot, reached, omitted };
+  }
+
+  /**
+   * Sequential Pattern Formation, once formed: the pattern's points exactly where the robots formed it
+   * (`frame.pattern.world`, already in the frame's coordinates), and for each robot the point it stands
+   * on. Several robots may share a point (n > |P̂|): all of them get the halo.
+   */
+  formedOverlay(frame) {
+    const { xy, flags } = frame, { world: pts, m } = frame.pattern, n = flags.length;
+    let span = 0;
+    for (let k = 2; k < pts.length; k += 2) span = Math.max(span, Math.hypot(pts[k] - pts[0], pts[k + 1] - pts[1]));
+    const tol = 1e-6 * span + 1e-9;
+    const slot = new Int32Array(n).fill(-1);
+    let reached = 0;
+    for (let i = 0; i < n; i++) {
+      if ((flags[i] & 3) === STATE_CRASH) continue;
+      for (let k = 0; k < m; k++) {
+        if (Math.hypot(xy[2 * i] - pts[2 * k], xy[2 * i + 1] - pts[2 * k + 1]) <= tol) { slot[i] = k; reached++; break; }
+      }
+    }
+    return { pts, m, slot, reached, omitted: 0 };
   }
 
   /** A pre-drawn disc (or ring) of radius r CSS px at pixel density dpr. */

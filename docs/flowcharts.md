@@ -899,7 +899,7 @@ requestFrame() {
 }
 ```
 
-`slice` — [`web/worker.js:180`](../web/worker.js#L180)
+`slice` — [`web/worker.js:181`](../web/worker.js#L181)
 
 ```js
 function slice(gen) {
@@ -929,7 +929,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:153`](../crates/lcm-wasm/src/lib.rs#L153)
+`advance` — [`crates/lcm-wasm/src/lib.rs:167`](../crates/lcm-wasm/src/lib.rs#L167)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -945,7 +945,7 @@ pub fn advance(&mut self, max_events: u32, until_time: f64) -> Stop {
 }
 ```
 
-`postFrame` — [`web/worker.js:214`](../web/worker.js#L214)
+`postFrame` — [`web/worker.js:215`](../web/worker.js#L215)
 
 ```js
 function postFrame(extra = {}) {
@@ -964,6 +964,17 @@ function postFrame(extra = {}) {
       patternCache = { live, m: t[0], unit: Array.from(t.subarray(1)), closed: patternClosed };
     }
     pattern = patternCache;
+  }
+  // SqPF: once the occupied points are the pattern, its points where the robots stand (in the order the
+  // pattern was given, so joining them draws the shape), as offsets from the frame's origin like `xy`.
+  if (sqpfRun) {
+    const w = sim.formed_pattern();
+    if (w.length) {
+      const ox = sim.frame_origin_x(), oy = sim.frame_origin_y();
+      const world = new Float64Array(w.length);
+      for (let k = 0; k < w.length; k += 2) { world[k] = w[k] - ox; world[k + 1] = w[k + 1] - oy; }
+      pattern = { world, m: w.length / 2, closed: patternClosed };
+    }
   }
   self.postMessage({
     type: "frame",
@@ -998,7 +1009,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:386`](../crates/lcm-wasm/src/lib.rs#L386)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:400`](../crates/lcm-wasm/src/lib.rs#L400)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1027,7 +1038,7 @@ pub fn fill_frame(
 }
 ```
 
-`draw` — [`web/renderer.js:560`](../web/renderer.js#L560)
+`draw` — [`web/renderer.js:582`](../web/renderer.js#L582)
 
 ```js
 draw(ctx = this.ctx, dpr = this.dpr) {
@@ -1908,7 +1919,7 @@ flowchart TD
 | Γ has one too? | The pattern points must not create a smaller angle than θ₁. |
 | Occupy | The walker (the highest priority free robot with a free path) goes, via O, to the highest priority empty pattern point. |
 
-`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1217`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1217)
+`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1231`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1231)
 
 ```rust
 /// Look in the robot's own frame, Compute with [`destination`], and hand

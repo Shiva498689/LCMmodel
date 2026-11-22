@@ -1131,12 +1131,20 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
 /// never call it.
 #[must_use]
 pub fn is_formed(pat: &Pattern, world: &[Point]) -> bool {
-    let Some(&first) = world.first() else {
-        return false;
-    };
-    let q_pts = snapshot(world, &LocalFrame::global(first));
+    formed_placement(pat, world).is_some()
+}
+
+/// When the robots at `world` form P̂: the pattern points where they are,
+/// in world coordinates and in the order P̂ was given (so the page can join
+/// them into the shape's outline). `None` while the pattern is not formed.
+/// For reports and the page; robots never call it.
+#[must_use]
+pub fn formed_placement(pat: &Pattern, world: &[Point]) -> Option<Vec<Point>> {
+    let &first = world.first()?;
+    let frame = LocalFrame::global(first);
+    let q_pts = snapshot(world, &frame);
     if q_pts.len() != pat.len() {
-        return false;
+        return None;
     }
     let (o, rho) = sec(&q_pts);
     let sc = Scene {
@@ -1146,14 +1154,20 @@ pub fn is_formed(pat: &Pattern, world: &[Point]) -> bool {
         rho,
         tol: 1e-7 * rho,
     };
-    sc.pts.iter().any(|&x| {
-        sc.pts.iter().any(|&y| {
-            !sc.at(x, y)
-                && [false, true]
-                    .into_iter()
-                    .any(|m| sc.same_set(&map_pair(pat, 0, 1, x, y, m)))
-        })
-    })
+    for &x in sc.pts {
+        for &y in sc.pts {
+            if sc.at(x, y) {
+                continue;
+            }
+            for mirror in [false, true] {
+                let placed = map_pair(pat, 0, 1, x, y, mirror);
+                if sc.same_set(&placed) {
+                    return Some(placed.into_iter().map(|p| frame.to_global(p)).collect());
+                }
+            }
+        }
+    }
+    None
 }
 
 // ── the robots ────────────────────────────────────────────────────────────────
