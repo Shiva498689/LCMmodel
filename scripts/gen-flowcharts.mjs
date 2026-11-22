@@ -31,6 +31,7 @@ const CLIENT = "web/client.js";
 const RENDERER = "web/renderer.js";
 const SQ = "crates/lcm-algorithms/src/sq_gathering.rs";
 const PATTERN = "crates/lcm-algorithms/src/pattern_formation.rs";
+const SQPF = "crates/lcm-algorithms/src/sq_pattern_formation.rs";
 
 // ------------------------------------------------------------- helpers ----
 
@@ -527,6 +528,77 @@ const CHARTS = [
             edge("q_k1", "q_join", "no"),
             edge("q_km", "q_wait", "no"),
             edge("q_km", "q_leave", "yes"),
+        ],
+    },
+    {
+        "id": "sqpf",
+        "title": "Sequential Pattern Formation (Algorithms 1 and 7)",
+        "short": "Any pattern from any start, one robot per turn, robots with private frames",
+        "blurb": (
+            "Algorithm SqPF (Algorithm 1 with Procedures Separate, Last, Overlap, Leader and Occupy) and " +
+            "Algorithm SqPF′ (Algorithm 7, patterns of 2 to 4 points) of \"Universal pattern formation by " +
+            "oblivious robots under sequential schedulers\" (arXiv:2412.10733, Sections 4 and 5), following " +
+            "the paper's Figure 1. It runs only under the sequential scheduler of chart 5, with non-rigid " +
+            "moves of at least δ; choosing it fixes those settings."
+        ),
+        "notes": [
+            "The robots are the paper's: each has its own private coordinate system (its own x-axis " +
+            "direction, unit of length and handedness, itself at the origin), sees only the set of occupied " +
+            "points (no identities, no multiplicity detection), remembers nothing and never terminates.",
+            "The robots agree on a frame from the configuration alone: the centre O and radius ρ of the " +
+            "smallest enclosing circle, and a unique smallest angle θ₁ (the leader angular sequence) that " +
+            "fixes a starting radius and which way is clockwise.",
+            "A run ends when a whole epoch passes with no robot moving (chart 5, Stalled); the page then " +
+            "checks that the occupied points are the pattern and says Formed.",
+            "Where the paper leaves a choice open, docs/sqpf.md says which one is made and why.",
+        ],
+        "lanes": ["rows", [["Look", 0, 1], ["Initialization", 2, 3], ["Finalization", 4, 4], ["Leader Configuration · Partial Pattern Formation", 5, 6]]],
+        "nodes": [
+            node("f_comp", "Compute", 2, 0, "entry", [SQPF, "compute"], "SqPatternFormation::compute()",
+                 "Called from the COMPUTE phase of chart 2 during the robot's turn (chart 5). The destination " +
+                 "comes back in the robot's own frame and is turned into world coordinates for the move."),
+            node("f_look", "See Q in its own frame", 2, 1, "step", [SQPF, "snapshot"], "snapshot() · Section 2.1",
+                 "The set of distinct occupied points, in the robot's private coordinate system, the robot at " +
+                 "the origin. Robots on one point are one point."),
+            node("f_few", "|Q| < |P̂|?", 2, 2, "decision", [SQPF, "destination"], "Alg. 1 l. 2 · Alg. 7 l. 3",
+                 "Fewer occupied points than pattern points: some robots share points and must separate."),
+            node("f_sep", "Separate", 0, 2, "out", [SQPF, "separate"], "Procedure 2",
+                 "One unit along the robot's own x-axis, or halfway to the first robot on that segment."),
+            node("f_big", "|P̂| ≥ 5?", 2, 3, "decision", null, "Section 3.2",
+                 "Patterns of 2 to 4 points use Algorithm 7, SqPF′, instead."),
+            node("f_prime", "SqPF′", 4, 3, "out", [SQPF, "sqpf_prime"], "Algorithm 7",
+                 "A unique farthest pair q₁q₂ is made and the pattern is laid over it; the other robots move to " +
+                 "the pattern points."),
+            node("f_last", "Special case?", 2, 4, "decision", [SQPF, "last"], "Procedure 3, Last",
+                 "Is Q already the pattern? Or is only the last pattern point p̂ₖ empty, with every other robot " +
+                 "on the segment Op̂ₖ?"),
+            node("f_fin", "Stay, or move to p̂ₖ", 0, 4, "end", null, "Finalization",
+                 "Formed: nobody moves again. Last one: the robot on Op̂ₖ moves toward p̂ₖ, the others stay."),
+            node("f_ovl", "Leader angular sequence in Q?", 2, 5, "decision", [SQPF, "overlap"], "Procedure 4, Overlap",
+                 "If so, lay the pattern over Q (the joint configuration Γ): its first point on the SEC on the " +
+                 "robot q_j that ends θ₁, in the clockwise order θ₁ defines."),
+            node("f_lead", "Leader", 0, 6, "out", [SQPF, "leader"], "Procedure 5",
+                 "Send one robot to O; from O it moves to u′ with |Ou′| = ρ/2 and ∠u′Oq_j = ξ/3, creating a " +
+                 "unique smallest angle."),
+            node("f_gam", "Γ has one too?", 2, 6, "decision", null, "Alg. 1 l. 14",
+                 "The pattern points must not create a smaller angle than θ₁."),
+            node("f_occ", "Occupy", 4, 6, "out", [SQPF, "occupy"], "Procedure 6 · the walker",
+                 "The walker (the highest priority free robot with a free path) goes, via O, to the highest " +
+                 "priority empty pattern point."),
+        ],
+        "edges": [
+            edge("f_comp", "f_look"),
+            edge("f_look", "f_few"),
+            edge("f_few", "f_sep", "yes"),
+            edge("f_few", "f_big", "no"),
+            edge("f_big", "f_prime", "no"),
+            edge("f_big", "f_last", "yes"),
+            edge("f_last", "f_fin", "yes"),
+            edge("f_last", "f_ovl", "no"),
+            edge("f_ovl", "f_lead", "Γ = null"),
+            edge("f_ovl", "f_gam", "yes"),
+            edge("f_gam", "f_occ", "yes"),
+            edge("f_gam", "f_lead", "no"),
         ],
     },
     {

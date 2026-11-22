@@ -150,9 +150,9 @@ pub struct SimConfig {
     /// other algorithms. Defaults to the 5-pointed star.
     pub target_pattern: PatternShape,
     /// Pattern Formation only: a user-given pattern as world points, used
-    /// instead of `target_pattern` when set. As in the pattern-formation model
-    /// it has exactly one point per robot; only its shape matters (it is formed
-    /// up to translation and scale).
+    /// instead of `target_pattern` when set. Only its shape matters (it is formed
+    /// up to translation, rotation, reflection and scale). PatternFormation needs
+    /// exactly one point per robot; SqPatternFormation at most one per robot.
     pub target_points: Option<Vec<[f64; 2]>>,
     pub num_of_robots: u32,
     pub initial_positions: Option<Vec<[f64; 2]>>,
@@ -316,13 +316,8 @@ impl SimConfig {
             }
         }
         if let Some(points) = &self.target_points {
-            if points.len() != self.num_of_robots as usize {
-                return Err(ConfigError::Unsupported(format!(
-                    "target_points must give one point per robot ({}), got {}",
-                    self.num_of_robots,
-                    points.len()
-                )));
-            }
+            // How many points a pattern needs is the algorithm's business: one per
+            // robot for PatternFormation, at most one per robot for SqPatternFormation.
             if points.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) {
                 return Err(ConfigError::Unsupported(
                     "target_points must be finite numbers".to_owned(),

@@ -224,6 +224,17 @@ export class WasmSimulation {
         return this;
     }
     /**
+     * Sequential Pattern Formation: 1 if the occupied points form the pattern
+     * (up to translation, rotation, reflection and scale), 0 if not; -1 for
+     * any other algorithm. Robots never terminate under SqPF, so a run ends
+     * stalled either way and the page asks this to say which it is.
+     * @returns {number}
+     */
+    pattern_formed() {
+        const ret = wasm.wasmsimulation_pattern_formed(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {number}
      */
     robot_count() {
@@ -434,9 +445,10 @@ if (Symbol.dispose) WasmSqTrace.prototype[Symbol.dispose] = WasmSqTrace.prototyp
 
 /**
  * The algorithms the core knows, as JSON `[{"key": …, "name": …,
- * "sequential_only": …, "multiplicities": …}, …]`: `sequential_only` when
- * the algorithm refuses the async scheduler, `multiplicities` when it works
- * with points that hold several robots (the page rings them).
+ * "sequential_only": …, "multiplicities": …, "non_rigid_only": …}, …]`:
+ * `sequential_only` when the algorithm refuses the async scheduler,
+ * `multiplicities` when it works with points that hold several robots (the
+ * page rings them), `non_rigid_only` when it needs non-rigid moves with δ > 0.
  * @returns {string}
  */
 export function algorithms() {

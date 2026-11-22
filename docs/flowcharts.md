@@ -16,8 +16,9 @@ explains itself, steps marked `</>` open their code, and a guided tour walks thr
 4. [In the browser](#4-in-the-browser) — Page, worker and Rust core working together
 5. [The sequential scheduler](#5-the-sequential-scheduler) — One robot at a time, turn by turn
 6. [SqGathering (Algorithm 8)](#6-sqgathering-algorithm-8) — Gathering with weak multiplicity detection, one robot per turn
-7. [Go-To-Center](#7-go-to-center) — Head for the centre without losing sight of anyone
-8. [Pattern Formation](#8-pattern-formation) — Robots agree on a shape and each walks to its point
+7. [Sequential Pattern Formation (Algorithms 1 and 7)](#7-sequential-pattern-formation-algorithms-1-and-7) — Any pattern from any start, one robot per turn, robots with private frames
+8. [Go-To-Center](#8-go-to-center) — Head for the centre without losing sight of anyone
+9. [Pattern Formation](#9-pattern-formation) — Robots agree on a shape and each walks to its point
 
 ---
 
@@ -928,7 +929,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:134`](../crates/lcm-wasm/src/lib.rs#L134)
+`advance` — [`crates/lcm-wasm/src/lib.rs:153`](../crates/lcm-wasm/src/lib.rs#L153)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -984,6 +985,8 @@ function postFrame(extra = {}) {
     trace: Float64Array.from(trace),
     ended: sim.ended(),
     stop,
+    // SqPF: robots never terminate, so a run ends stalled; say whether the pattern is formed.
+    formed: stop === "stalled" && sim.pattern_formed ? sim.pattern_formed() : -1,
     playing,
     busy: sinceMs ? Math.min(1, busyMs / (now - sinceMs)) : 0,
     pattern,
@@ -995,7 +998,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:367`](../crates/lcm-wasm/src/lib.rs#L367)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:386`](../crates/lcm-wasm/src/lib.rs#L386)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1828,7 +1831,562 @@ pub fn destination(&self, obs: &Observation) -> Point {
 
 ---
 
-## 7. Go-To-Center
+## 7. Sequential Pattern Formation (Algorithms 1 and 7)
+
+Algorithm SqPF (Algorithm 1 with Procedures Separate, Last, Overlap, Leader and Occupy) and Algorithm SqPF′ (Algorithm 7, patterns of 2 to 4 points) of "Universal pattern formation by oblivious robots under sequential schedulers" (arXiv:2412.10733, Sections 4 and 5), following the paper's Figure 1. It runs only under the sequential scheduler of chart 5, with non-rigid moves of at least δ; choosing it fixes those settings.
+
+```mermaid
+flowchart TD
+    classDef k_entry fill:#e8eefd,stroke:#2f5bea,color:#111,stroke-width:1.5px
+    classDef k_step fill:#ffffff,stroke:#9aa1ad,color:#111
+    classDef k_decision fill:#fff4dc,stroke:#d18b00,color:#111
+    classDef k_end fill:#e3f6e8,stroke:#1f9d55,color:#111,stroke-width:1.5px
+    classDef k_out fill:#f1f2f5,stroke:#9aa1ad,color:#333
+    subgraph lane0["Look"]
+        f_comp(["Compute<br/><small>SqPatternFormation::compute()</small>"])
+        f_look["See Q in its own frame<br/><small>snapshot() · Section 2.1</small>"]
+    end
+    subgraph lane1["Initialization"]
+        f_few{"|Q| &lt; |P̂|?<br/><small>Alg. 1 l. 2 · Alg. 7 l. 3</small>"}
+        f_sep[/"Separate<br/><small>Procedure 2</small>"/]
+        f_big{"|P̂| ≥ 5?<br/><small>Section 3.2</small>"}
+        f_prime[/"SqPF′<br/><small>Algorithm 7</small>"/]
+    end
+    subgraph lane2["Finalization"]
+        f_last{"Special case?<br/><small>Procedure 3, Last</small>"}
+        f_fin(["Stay, or move to p̂ₖ<br/><small>Finalization</small>"])
+    end
+    subgraph lane3["Leader Configuration · Partial Pattern Formation"]
+        f_ovl{"Leader angular sequence in Q?<br/><small>Procedure 4, Overlap</small>"}
+        f_lead[/"Leader<br/><small>Procedure 5</small>"/]
+        f_gam{"Γ has one too?<br/><small>Alg. 1 l. 14</small>"}
+        f_occ[/"Occupy<br/><small>Procedure 6 · the walker</small>"/]
+    end
+    class f_comp k_entry
+    class f_look k_step
+    class f_few k_decision
+    class f_sep k_out
+    class f_big k_decision
+    class f_prime k_out
+    class f_last k_decision
+    class f_fin k_end
+    class f_ovl k_decision
+    class f_lead k_out
+    class f_gam k_decision
+    class f_occ k_out
+    f_comp --> f_look
+    f_look --> f_few
+    f_few -- "yes" --> f_sep
+    f_few -- "no" --> f_big
+    f_big -- "no" --> f_prime
+    f_big -- "yes" --> f_last
+    f_last -- "yes" --> f_fin
+    f_last -- "no" --> f_ovl
+    f_ovl -- "Γ = null" --> f_lead
+    f_ovl -- "yes" --> f_gam
+    f_gam -- "yes" --> f_occ
+    f_gam -- "no" --> f_lead
+```
+
+- The robots are the paper's: each has its own private coordinate system (its own x-axis direction, unit of length and handedness, itself at the origin), sees only the set of occupied points (no identities, no multiplicity detection), remembers nothing and never terminates.
+- The robots agree on a frame from the configuration alone: the centre O and radius ρ of the smallest enclosing circle, and a unique smallest angle θ₁ (the leader angular sequence) that fixes a starting radius and which way is clockwise.
+- A run ends when a whole epoch passes with no robot moving (chart 5, Stalled); the page then checks that the occupied points are the pattern and says Formed.
+- Where the paper leaves a choice open, docs/sqpf.md says which one is made and why.
+
+| Step | What happens |
+| --- | --- |
+| Compute | Called from the COMPUTE phase of chart 2 during the robot's turn (chart 5). The destination comes back in the robot's own frame and is turned into world coordinates for the move. |
+| See Q in its own frame | The set of distinct occupied points, in the robot's private coordinate system, the robot at the origin. Robots on one point are one point. |
+| |Q| < |P̂|? | Fewer occupied points than pattern points: some robots share points and must separate. |
+| Separate | One unit along the robot's own x-axis, or halfway to the first robot on that segment. |
+| |P̂| ≥ 5? | Patterns of 2 to 4 points use Algorithm 7, SqPF′, instead. |
+| SqPF′ | A unique farthest pair q₁q₂ is made and the pattern is laid over it; the other robots move to the pattern points. |
+| Special case? | Is Q already the pattern? Or is only the last pattern point p̂ₖ empty, with every other robot on the segment Op̂ₖ? |
+| Stay, or move to p̂ₖ | Formed: nobody moves again. Last one: the robot on Op̂ₖ moves toward p̂ₖ, the others stay. |
+| Leader angular sequence in Q? | If so, lay the pattern over Q (the joint configuration Γ): its first point on the SEC on the robot q_j that ends θ₁, in the clockwise order θ₁ defines. |
+| Leader | Send one robot to O; from O it moves to u′ with |Ou′| = ρ/2 and ∠u′Oq_j = ξ/3, creating a unique smallest angle. |
+| Γ has one too? | The pattern points must not create a smaller angle than θ₁. |
+| Occupy | The walker (the highest priority free robot with a free path) goes, via O, to the highest priority empty pattern point. |
+
+`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1217`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1217)
+
+```rust
+/// Look in the robot's own frame, Compute with [`destination`], and hand
+/// the destination back to the simulator in world coordinates for Move.
+/// Never terminates: robots stay put once formed, as the paper's do.
+fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
+    let compass = self.compasses[look.me as usize % self.compasses.len()];
+    let frame = compass.frame(look.position);
+    let q_pts = snapshot(&look.view.pos, &frame);
+    let (dest, _) = destination(&self.pattern, &q_pts);
+    let target = if dest.x == 0.0 && dest.y == 0.0 {
+        look.position
+    } else {
+        frame.to_global(dest)
+    };
+    Decision {
+        target,
+        terminate: false,
+        overlay: OverlayUpdate::Keep,
+    }
+}
+```
+
+`snapshot` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:334`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L334)
+
+```rust
+/// The Look phase (Section 2.1): the set Q of distinct points occupied by
+/// robots, "expressed within a private coordinate system" of which the robot
+/// is the origin. Positions closer than 10⁻⁹ of the snapshot's size are one
+/// point (no multiplicity detection: the count is not kept). Sorted by the
+/// robot's own coordinates, so nothing of the robots' identities survives.
+#[must_use]
+pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
+    let local: Vec<Point> = world.iter().map(|&p| frame.to_local(p)).collect();
+    let span = local.iter().map(|&p| norm(p)).fold(0.0, f64::max);
+    let tol = REL_TOL * span;
+    let mut q: Vec<Point> = vec![Point::new(0.0, 0.0)];
+    for p in local {
+        if q.iter().all(|&x| dist(x, p) > tol) {
+            q.push(p);
+        }
+    }
+    q.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap_or(Ordering::Equal)
+            .then(a.y.partial_cmp(&b.y).unwrap_or(Ordering::Equal))
+    });
+    q
+}
+```
+
+`destination` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1099`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1099)
+
+```rust
+/// The robot's Compute phase: SqPF (|P̂| ≥ 5) or SqPF′ (|P̂| < 5) on the
+/// snapshot `q_pts` (the set Q in the robot's own frame, the robot at the
+/// origin, as [`snapshot`] builds it). Returns the destination in the same frame.
+///
+/// # Panics
+/// If `q_pts` does not contain the origin.
+#[must_use]
+pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
+    let q = *q_pts
+        .iter()
+        .find(|p| p.x == 0.0 && p.y == 0.0)
+        .expect("the robot is at the origin of its own snapshot");
+    if q_pts.len() < pat.len() {
+        return (separate(q_pts, q), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
+    }
+    let (o, rho) = sec(q_pts);
+    let sc = Scene {
+        q,
+        pts: q_pts,
+        o,
+        rho,
+        tol: REL_TOL * rho,
+    };
+    if pat.len() >= 5 {
+        sqpf(pat, &sc)
+    } else {
+        sqpf_prime(pat, &sc)
+    }
+}
+```
+
+`separate` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:696`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L696)
+
+```rust
+/// Procedure 2, Separate: a point at one unit along the robot's own x-axis,
+/// or the midpoint towards the closest robot on that segment.
+fn separate(pts: &[Point], q: Point) -> Point {
+    let span = pts.iter().map(|&p| dist(p, q)).fold(0.0, f64::max);
+    let sc = Scene {
+        q,
+        pts,
+        o: q,
+        rho: span.max(1.0),
+        tol: REL_TOL * span.max(1.0),
+    };
+    let q1 = Point::new(q.x + 1.0, q.y); // l. 1: q′, one unit along the x-axis
+    let on = sc.robots_on(q, q1);
+    let on: Vec<Point> = on
+        .into_iter()
+        .chain(pts.iter().copied().filter(|&p| sc.at(p, q1)))
+        .collect();
+    match on
+        .iter()
+        .min_by(|a, b| dist(**a, q).partial_cmp(&dist(**b, q)).unwrap_or(Ordering::Equal))
+    {
+        None => q1,                                                    // l. 2-3
+        Some(&q2) => Point::new(0.5 * (q.x + q2.x), 0.5 * (q.y + q2.y)), // l. 5-6
+    }
+}
+```
+
+`sqpf_prime` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:972`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L972)
+
+```rust
+/// Algorithm 7, SqPF′ (1 < |P̂| < 5), after the |Q| < k test.
+///
+/// One addition to the paper's pseudocode: when Q is already similar to P̂ the
+/// robot stays. Algorithm 7 has no such test, and a pattern with two or three
+/// pairs at the maximum distance (a square, a rectangle, an equilateral
+/// triangle) has no unique maximum pair once formed, so line 7 would move it
+/// again, against the predicate of Section 2.3 ("and to no longer move").
+fn sqpf_prime(pat: &Pattern, sc: &Scene) -> (Point, Step) {
+    let q = sc.q;
+    let k = pat.len();
+    if sc.pts.len() == k {
+        for (i, &x) in sc.pts.iter().enumerate() {
+            for (j, &y) in sc.pts.iter().enumerate() {
+                for mirror in [false, true] {
+                    if i != j && sc.same_set(&map_pair(pat, 0, 1, x, y, mirror)) {
+                        return (q, Step::PrimeFormed);
+                    }
+                }
+            }
+        }
+    }
+    // l. 6: the pairs at the maximum distance in Q.
+    let mut dmax = 0.0_f64;
+    for (i, &x) in sc.pts.iter().enumerate() {
+        for &y in &sc.pts[..i] {
+            dmax = dmax.max(dist(x, y));
+        }
+    }
+    let mut pairs = Vec::new();
+    for (i, &x) in sc.pts.iter().enumerate() {
+        for &y in &sc.pts[i + 1..] {
+            if dist(x, y) >= dmax - sc.tol {
+                pairs.push((x, y));
+            }
+        }
+    }
+    if pairs.len() != 1 {
+        // l. 7-10
+        if pairs.iter().any(|&(x, y)| sc.at(q, x) || sc.at(q, y)) {
+            let far = sc
+                .pts
+                .iter()
+                .copied()
+                .find(|&p| dist(p, q) >= dmax - sc.tol)
+                .unwrap_or(q);
+            let away = sub(q, far);
+            let l = norm(away);
+            return (
+                Point::new(q.x + away.x / l, q.y + away.y / l),
+                Step::PrimeStretch,
+            );
+        }
+        return (q, Step::PrimeStay);
+    }
+    let (q1, q2) = pairs[0]; // l. 12
+    if sc.at(q, q1) || sc.at(q, q2) {
+        return (q, Step::PrimeStay);
+    }
+    if sc.pts.len() > k {
+        // l. 13-17
+        let target = if dist(q, q2) < dist(q, q1) - sc.tol { q2 } else { q1 };
+        if sc.robots_on(q, target).is_empty() {
+            return (target, Step::PrimeEqualize);
+        }
+        return (q, Step::PrimeStay);
+    }
+    // l. 18-26: |Q| = |P̂|. The overlap with the smallest distance deviation.
+    let others: Vec<Point> = sc
+        .pts
+        .iter()
+        .copied()
+        .filter(|&p| !sc.at(p, q1) && !sc.at(p, q2))
+        .collect();
+    // l. 20-23: every overlap, with its distance deviation.
+    let mut overlaps: Vec<(f64, Vec<Point>)> = Vec::new();
+    for &(pa, pb) in &pat.max_pairs {
+        for (x, y) in [(q1, q2), (q2, q1)] {
+            for mirror in [false, true] {
+                let placed = map_pair(pat, pa, pb, x, y, mirror);
+                let rest: Vec<Point> = (0..k)
+                    .filter(|&i| i != pa && i != pb)
+                    .map(|i| placed[i])
+                    .collect();
+                let dev = match (rest.len(), others.len()) {
+                    (1, 1) => dist(rest[0], others[0]),
+                    (2, 2) => (dist(rest[0], others[0]) + dist(rest[1], others[1]))
+                        .min(dist(rest[0], others[1]) + dist(rest[1], others[0])),
+                    _ => 0.0,
+                };
+                overlaps.push((dev, placed));
+            }
+        }
+    }
+    let smallest = overlaps.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+    // "If there are two overlaps of the pattern that have the same smallest
+    // distance deviation, then r can consider one of them indiscriminately"
+    // (Section 5.1). r considers one in which it has a move, if there is one:
+    // were each robot to pick one in which another robot moves, a symmetric Q
+    // would never change. See docs/sqpf.md, choice 6.
+    for (_, placed) in overlaps.iter().filter(|o| o.0 <= smallest + sc.tol) {
+        let free: Vec<Point> = sc
+            .pts
+            .iter()
+            .copied()
+            .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
+            .collect();
+        // l. 24: an unoccupied pattern point whose closest free robot is q.
+        let mine = placed
+            .iter()
+            .copied()
+            .filter(|&p| !sc.occupied(p))
+            .filter(|&p| {
+                free.iter()
+                    .copied()
+                    .min_by(|x, y| dist(*x, p).partial_cmp(&dist(*y, p)).unwrap_or(Ordering::Equal))
+                    .is_some_and(|c| sc.at(c, q))
+            })
+            .min_by(|x, y| dist(*x, q).partial_cmp(&dist(*y, q)).unwrap_or(Ordering::Equal));
+        if let Some(pi) = mine {
+            if sc.robots_on(q, pi).is_empty() {
+                return (pi, Step::PrimeOccupy); // l. 25-26
+            }
+        }
+    }
+    (q, Step::PrimeStay)
+}
+```
+
+`last` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:722`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L722)
+
+```rust
+/// Procedure 3, Last.
+fn last(pat: &Pattern, sc: &Scene) -> Option<(Point, Step)> {
+    let on_sec: Vec<Point> = sc.pts.iter().copied().filter(|&p| sc.on_sec(p)).collect();
+    // "the case when SEC(Q) contains more than k robot positions is not handled by this procedure"
+    if on_sec.len() > pat.len() {
+        return None;
+    }
+    // l. 2: the ≤ 2k transformations overlapping p̂ᵢ with a robot on SEC(Q).
+    let mut taus: Vec<(Vec<Point>, Point, f64)> = Vec::new();
+    for &qi in &on_sec {
+        for &(anchor, d) in &pat.anchors {
+            for mirror in [false, true] {
+                let placed = pat.place(anchor, mirror, qi, sc.o, sc.rho);
+                taus.push((placed, qi, if mirror { -d } else { d }));
+            }
+        }
+    }
+    // l. 4-5: Q ∈ 𝓑(P̂): do not move.
+    if taus.iter().any(|(placed, _, _)| sc.same_set(placed)) {
+        return Some((sc.q, Step::Formed));
+    }
+    // l. 7-8: the "last one" cases. The configuration is a special case when
+    // some τ leaves only p̂ₖ empty (or none) with every other robot on Op̂ₖ;
+    // then the robot on Op̂ₖ moves toward p̂ₖ and every other robot stays.
+    // Line 7 also asks q ∈ Op̂ₖ, so read literally a robot elsewhere would get
+    // null and leave its pattern point through Overlap/Leader, undoing the
+    // Finalization; the text ("Once a robot located at Op̂ₖ is activated, it
+    // moves toward p̂ₖ"), Fig. 1 (Special case? → Last → END) and the proof of
+    // Lemma 2 keep the others still. See docs/sqpf.md, choice 3.
+    for (placed, a, dir) in &taus {
+        let Some(rank) = sc.ranking(placed, *a, *dir) else {
+            continue;
+        };
+        let pk = placed[rank[rank.len() - 1]]; // l. 3: lowest priority pattern point
+        let missing: Vec<Point> = placed.iter().copied().filter(|&p| !sc.occupied(p)).collect();
+        if !(missing.is_empty() || (missing.len() == 1 && sc.at(missing[0], pk))) {
+            continue;
+        }
+        let extra: Vec<Point> = sc
+            .pts
+            .iter()
+            .copied()
+            .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
+            .collect();
+        let on_seg: Vec<Point> = sc
+            .pts
+            .iter()
+            .copied()
+            .filter(|&x| sc.on_segment(x, sc.o, pk) && !sc.at(x, pk))
+            .collect();
+        let same = extra.len() == on_seg.len()
+            && extra.iter().all(|&x| on_seg.iter().any(|&y| sc.at(x, y)));
+        if same {
+            if sc.on_segment(sc.q, sc.o, pk) {
+                return Some((pk, Step::Finalize));
+            }
+            return Some((sc.q, Step::FinalizeWait));
+        }
+    }
+    None
+}
+```
+
+`overlap` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:784`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L784)
+
+```rust
+/// Procedure 4, Overlap.
+fn overlap(pat: &Pattern, sc: &Scene) -> Option<Gamma> {
+    let lam = sc.leader_seq(&sc.rays(&sc.robot_items()))?; // l. 2
+    // l. 1, 3-4: p̂ᵢ on q_j, the order of μ̂ following λ(Q)'s clockwise direction.
+    let (anchor, d) = pat.anchors[0];
+    let mirror = (d > 0.0) != (lam.dir > 0.0);
+    Some(Gamma {
+        placed: pat.place(anchor, mirror, lam.q_j, sc.o, sc.rho),
+        lam,
+    })
+}
+```
+
+`leader` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:796`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L796)
+
+```rust
+/// Procedure 5, Leader.
+fn leader(sc: &Scene, gamma: Option<&Gamma>) -> (Point, Step) {
+    let q = sc.q;
+    if !sc.occupied(sc.o) {
+        // l. 2-3
+        if sc.responsible(q) || !sc.robots_on(sc.o, q).is_empty() {
+            return (q, Step::LeaderHold);
+        }
+        // l. 4-5
+        if let Some(g) = gamma {
+            let defines = sc.at(q, g.lam.s_in) || sc.at(q, g.lam.q_j);
+            let coradial = sc.pts.iter().any(|&p| !sc.at(p, q) && sc.coradial(p, q));
+            if defines && !coradial {
+                return (q, Step::LeaderKeepAngle);
+            }
+        }
+        return (sc.o, Step::LeaderToCenter); // l. 6-7
+    }
+    if sc.at_center(q) {
+        let (qj, xi, side) = match gamma {
+            // l. 10-12: any robot on SEC(Q); ξ the smallest angle of S′(Q).
+            None => {
+                let qj = sc.pts.iter().copied().find(|&p| sc.on_sec(p)).unwrap_or(q);
+                let rays = sc.rays(&sc.robot_items());
+                let xi = Scene::gaps(&rays).into_iter().fold(TAU, f64::min);
+                (qj, xi, 1.0)
+            }
+            // l. 13-15: q_j of θ₁; ξ the smallest angle of S′(Γ). u′ goes on the side
+            // that keeps Γ's clockwise direction (see docs/sqpf.md, choice 5).
+            Some(g) => {
+                let rays = sc.rays(&sc.gamma_items(&g.placed));
+                let xi = Scene::gaps(&rays).into_iter().fold(TAU, f64::min);
+                (g.lam.q_j, xi, -g.lam.dir)
+            }
+        };
+        // l. 16-17: |Ou′| = ρ/2 and ∠u′Oq_j = ξ/3.
+        let a = angle_of(sub(qj, sc.o)) + side * xi / 3.0;
+        return (polar(sc.o, 0.5 * sc.rho, a), Step::LeaderToU);
+    }
+    (q, Step::LeaderWait) // l. 18-19
+}
+```
+
+`occupy` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:838`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L838)
+
+```rust
+/// Procedure 6, Occupy (with the walker of Section 4.1.7).
+fn occupy(sc: &Scene, g: &Gamma) -> (Point, Step) {
+    let (a, dir) = (g.lam.q_j, g.lam.dir);
+    let placed = &g.placed;
+    let Some(rank) = sc.ranking(placed, a, dir) else {
+        return (sc.q, Step::OccupyWait);
+    };
+    // l. 1-5
+    let pk = placed[rank[rank.len() - 1]];
+    let pl = rank
+        .iter()
+        .map(|&i| placed[i])
+        .find(|&p| !sc.occupied(p))
+        .unwrap_or(pk);
+    // Free robots: not located at a pattern point.
+    let free: Vec<Point> = sc
+        .pts
+        .iter()
+        .copied()
+        .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
+        .collect();
+    // Priority (Section 4.1.7): radiangular distance from p₁ = A.
+    let higher = |x: Point, y: Point| -> Ordering {
+        let (tx, dx) = sc.radiangular(a, x, dir);
+        let (ty, dy) = sc.radiangular(a, y, dir);
+        match cmp_tol(tx, ty, ANG_TOL) {
+            Ordering::Equal if tx <= ANG_TOL => cmp_tol(dx, dy, sc.tol),
+            Ordering::Equal => cmp_tol(dy, dx, sc.tol),
+            o => o,
+        }
+    };
+    // l. 6: the highest priority free robot not defining SEC(Q(t)).
+    let Some(u) = free
+        .iter()
+        .copied()
+        .filter(|&x| !sc.responsible(x))
+        .min_by(|x, y| higher(*x, *y))
+    else {
+        return (sc.q, Step::OccupyWait);
+    };
+    let detour = sc.robots_on_detour(u, pl);
+    // ρₗ: the radius of SEC through pₗ.
+    let rim = if sc.at_center(pl) {
+        sc.o
+    } else {
+        polar(sc.o, sc.rho, angle_of(sub(pl, sc.o)))
+    };
+    let on_radius = |x: Point| sc.at(x, sc.o) || sc.on_segment(x, sc.o, rim);
+    let radius_others: Vec<Point> = free
+        .iter()
+        .copied()
+        .filter(|&x| !sc.at(x, u) && !sc.at(x, pl) && on_radius(x))
+        .collect();
+    let w = if detour.is_empty() && radius_others.is_empty() {
+        u // l. 7-8
+    } else if radius_others.is_empty() {
+        // l. 9-11: the robot on the detour with the smallest radiangular distance from pₗ.
+        detour
+            .iter()
+            .copied()
+            .min_by(|x, y| {
+                let (tx, dx) = sc.radiangular(pl, *x, dir);
+                let (ty, dy) = sc.radiangular(pl, *y, dir);
+                cmp_tol(tx, ty, ANG_TOL).then(cmp_tol(dx, dy, sc.tol))
+            })
+            .unwrap_or(u)
+    } else {
+        // l. 13-18: along ρₗ from the SEC towards O, the first free robot v.
+        let v = free
+            .iter()
+            .copied()
+            .filter(|&x| !sc.at(x, pl) && on_radius(x))
+            .max_by(|x, y| {
+                dist(*x, sc.o)
+                    .partial_cmp(&dist(*y, sc.o))
+                    .unwrap_or(Ordering::Equal)
+            })
+            .unwrap_or(u);
+        let between = sc.robots_on(v, pl);
+        between
+            .iter()
+            .copied()
+            .min_by(|x, y| dist(*x, pl).partial_cmp(&dist(*y, pl)).unwrap_or(Ordering::Equal))
+            .unwrap_or(v)
+    };
+    // l. 19-25
+    if sc.at(sc.q, w) {
+        if sc.coradial(sc.q, pl) {
+            (pl, Step::OccupyMove)
+        } else {
+            (sc.o, Step::OccupyToCenter)
+        }
+    } else {
+        (sc.q, Step::OccupyWait)
+    }
+}
+```
+
+---
+
+## 8. Go-To-Center
 
 Each robot heads for the centre of the smallest circle around the robots it sees, but never so far that it could lose sight of a neighbour. This is Robot._go_to_center and Robot._gtc_terminal in the original simulator, from Ando, Oasa, Suzuki and Yamashita (1999). With limited visibility it keeps a swarm that starts connected together, which simple centre-of-gravity gathering does not.
 
@@ -2063,7 +2621,7 @@ pub(crate) fn welzl_recur(
 
 ---
 
-## 8. Pattern Formation
+## 9. Pattern Formation
 
 Every robot builds the same chosen shape from the snapshot — centred on the swarm's average position, sized by its spread — spreads n target marks along it, works out which mark is its own, and walks there. Repeated by all robots, the swarm settles into the shape. This is Robot._pattern_formation and Robot._pattern_terminal in robot.py (Suzuki & Yamashita 1999), generalised from the fixed star to any predefined shape; that any pattern is formable this way is Universal Pattern Formation (Flocchini, Navarra, Pattanayak, Piselli & Santoro, arXiv:2412.10733). The default shape is a 5-pointed star; the selector in the toolbar offers circle, square, triangle and more.
 

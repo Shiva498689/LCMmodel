@@ -50,6 +50,10 @@ function config() {
   const c = readConfig(settings.values, $("algorithm").value, settings.customPoints);
   const shape = $("target-pattern")?.value || "star"; // Pattern Formation only; others ignore it
   c.target_pattern = shape === "custom" ? "star" : shape;
+  if (c.algorithm === "SqPatternFormation") {
+    // The pattern P̂ is the robots' input, as a set of points; any number of robots n ≥ |P̂| may form it.
+    c.target_points = shape === "custom" ? customPattern().points : shapePoints(shape);
+  }
   if (c.algorithm === "PatternFormation") {
     // One robot per point, as in the pattern-formation model: the robot count follows the points
     // (a predefined shape is its corners, see SHAPE_POINTS).
@@ -60,13 +64,37 @@ function config() {
   return c;
 }
 
-/** The pattern list applies only to Pattern Formation; hide it otherwise. */
+/** The algorithms that form a pattern chosen in the toolbar's pattern list. */
+const PATTERN_ALGORITHMS = ["PatternFormation", "SqPatternFormation"];
+/** PatternFormation (the robot.py port) needs exactly one robot per point; SqPF any n ≥ |P̂|. */
+const onePerPoint = () => $("algorithm").value === "PatternFormation";
+
+/** The pattern list applies only to the pattern-formation algorithms; hide it otherwise. */
 function syncPatternVisibility() {
-  const on = $("algorithm").value === "PatternFormation";
+  const on = PATTERN_ALGORITHMS.includes($("algorithm").value);
   $("target-pattern").hidden = !on;
   $("pattern_editor").hidden = !(on && $("target-pattern").value === "custom");
   if (!$("pattern_editor").hidden) showPatternProblem();
-  else settings.lockRobots(on ? shapePoints($("target-pattern").value).length : null);
+  else settings.lockRobots(on && onePerPoint() ? shapePoints($("target-pattern").value).length : null);
+}
+
+/** Points of the pattern now chosen (a predefined shape's corners, or the custom points). */
+const chosenPattern = () => ($("target-pattern").value === "custom" ? customPattern().points : shapePoints($("target-pattern").value));
+
+/**
+ * The settings an algorithm's paper fixes, for settings.lockModel: SqGathering and SqPF run only under
+ * the sequential scheduler, with unlimited visibility and no faults; SqPF also only with non-rigid
+ * moves of at least δ > 0 (arXiv:2412.10733, Section 2).
+ */
+function modelLockFor(a) {
+  if (!a?.sequential_only && !a?.non_rigid_only) return null;
+  const values = { scheduler: "sequential", unlimited_visibility: true, num_of_faults: 0 };
+  if (a.non_rigid_only) values.rigid_movement = false;
+  return {
+    values,
+    min: a.non_rigid_only ? { delta: 1 } : {},
+    reason: `Fixed by ${a.name}: its paper's robot model (sequential scheduler${a.non_rigid_only ? ", non-rigid moves with δ > 0" : ""}, unlimited visibility, no faults)`,
+  };
 }
 
 /**
@@ -105,9 +133,12 @@ function customPattern() {
 
 function showPatternProblem() {
   const { points, errors } = customPattern();
-  $("pattern_count").textContent = `${points.length} point${points.length === 1 ? "" : "s"} = ${points.length} robot${points.length === 1 ? "" : "s"}`;
-  // One robot per point: the Robots slider follows the points and is locked while this pattern is chosen.
-  if (points.length) settings.lockRobots(points.length);
+  const s = points.length === 1 ? "" : "s";
+  $("pattern_count").textContent = onePerPoint()
+    ? `${points.length} point${s} = ${points.length} robot${s}`
+    : `${points.length} point${s}: at least ${points.length} robot${s}`;
+  // PatternFormation: one robot per point, so the Robots slider follows the points and is locked.
+  if (points.length) settings.lockRobots(onePerPoint() ? points.length : null);
   $("pattern_error").hidden = !errors.length;
   $("pattern_error").textContent = errors.length ? `Line ${errors[0].line}: ${errors[0].message}` : "";
   return errors;
@@ -119,7 +150,7 @@ let fitPending = false; // fit the view to the new run's first frame
 function newRun({ quiet = false } = {}) {
   clearTimeout(restartTimer);
   restartTimer = 0;
-  if ($("algorithm").value === "PatternFormation" && $("target-pattern").value === "custom") {
+  if (PATTERN_ALGORITHMS.includes($("algorithm").value) && $("target-pattern").value === "custom") {
     const errors = showPatternProblem();
     if (errors.length) {
       if (!quiet) toast(`Fix the pattern first: line ${errors[0].line}, ${errors[0].message}`, true);
@@ -130,6 +161,14 @@ function newRun({ quiet = false } = {}) {
   if (problem) {
     if (!quiet) toast(`Fix the coordinates first: line ${problem[0].line}, ${problem[0].message}`, true);
     return false;
+  }
+  if ($("algorithm").value === "SqPatternFormation" && settings.values.pattern !== "custom") {
+    // The trivial assumption of the paper: at least as many robots as pattern points.
+    const k = chosenPattern().length;
+    if (settings.values.num_of_robots < k) {
+      settings.set("num_of_robots", k, false);
+      if (!quiet) toast(`A ${k}-point pattern needs at least ${k} robots: Robots set to ${k}`);
+    }
   }
   const c = config();
   const v = settings.values;
@@ -343,10 +382,8 @@ client.on("ready", ({ algorithms: list, patterns }) => {
   algorithms = list;
   $("algorithm").innerHTML = list.map((a) => `<option value="${a.key}">${a.name}</option>`).join("");
   const asked = list.find((a) => a.key === link.algorithm);
-  if (asked) {
-    $("algorithm").value = asked.key;
-    if (asked.sequential_only) settings.set("scheduler", "sequential", false);
-  }
+  if (asked) $("algorithm").value = asked.key;
+  settings.lockModel(modelLockFor(list.find((a) => a.key === $("algorithm").value)));
   updateExamples();
   updatePlaybackOptions();
   const speed = link.speed === "max" ? "Infinity" : link.speed;
@@ -404,7 +441,9 @@ function showEndNote(kind) {
   const points = trace.points, size = points.length ? points[points.length - 1] : 0;
   const zoomed = renderer.zoom > 20 ? ` This view is zoomed in ${fmtZoomWords(renderer.zoom)} times; the grid and the scale bar show the real size.` : "";
   let html;
-  if (kind === "ended") {
+  if (kind === "stalled" && frame?.formed === 1) {
+    html = `<div class="cap-head">Pattern formed: no robot moves any more</div><div class="cap-body">The occupied points are the pattern, up to translation, rotation, reflection and scale. Robots under Sequential Pattern Formation never terminate, as in the paper: the run stops after a whole epoch in which no robot moved. The swarm is ${fmtSize(size)} units across.${zoomed}</div>`;
+  } else if (kind === "ended") {
     html = `<div class="cap-head">Finished: every robot has terminated</div><div class="cap-body">Grey robots have terminated. The swarm is ${fmtSize(size)} units across (from its centre to its farthest robot).${zoomed}</div>`;
   } else {
     // Stalled: a whole round in which no robot could move or finish. Often the numbers have run out: a robot's
@@ -548,6 +587,7 @@ function updateHud(force = false) {
   const statusText = {
     loading: "Loading…", ready: "Ready", running: "Running", paused: "Paused",
     ended: frame?.ended ? "Ended · all terminated"
+      : frame?.stop === "stalled" && frame?.formed === 1 ? "Formed · no robot moves any more"
       : frame?.stop === "stalled" ? "Stalled · nothing can move any more"
       : frame?.stop === "max-turns" ? "Stopped · turn limit reached" : `Stopped (${frame?.stop})`,
   }[state];
@@ -614,12 +654,17 @@ $("algorithm").addEventListener("change", () => {
   syncPatternVisibility(); // show/hide the Pattern Formation shape list
   updateExamples();
   syncAddress();
-  // An algorithm that only works under the sequential scheduler (SqGathering)
-  // switches it on, rather than failing with the async default.
+  // An algorithm that only works in its paper's model (SqGathering, SqPF) fixes the settings
+  // of that model, the scheduler first: it is switched to Sequential and cannot be changed back.
   const a = algorithms.find((x) => x.key === $("algorithm").value);
-  if (a?.sequential_only && settings.values.scheduler !== "sequential") {
-    settings.set("scheduler", "sequential", false);
-    toast(`${a.name} runs one robot at a time: Scheduler set to Sequential`);
+  const wasSequential = settings.values.scheduler === "sequential";
+  settings.lockModel(modelLockFor(a));
+  if (a?.sequential_only && !wasSequential) {
+    toast(`${a.name} runs one robot at a time: Scheduler set to Sequential (fixed while it is chosen)`);
+  }
+  if (a?.key === "SqPatternFormation" && settings.values.pattern !== "custom" && settings.values.num_of_robots > 60) {
+    // Walkers move one at a time, so a big swarm takes very long; start from the pattern's size.
+    settings.set("num_of_robots", chosenPattern().length, false);
   }
   // A new algorithm is a new experiment: start it now, even mid-run.
   if (state === "loading") return;

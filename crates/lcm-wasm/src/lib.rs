@@ -41,9 +41,10 @@ impl From<StopReason> for Stop {
 }
 
 /// The algorithms the core knows, as JSON `[{"key": …, "name": …,
-/// "sequential_only": …, "multiplicities": …}, …]`: `sequential_only` when
-/// the algorithm refuses the async scheduler, `multiplicities` when it works
-/// with points that hold several robots (the page rings them).
+/// "sequential_only": …, "multiplicities": …, "non_rigid_only": …}, …]`:
+/// `sequential_only` when the algorithm refuses the async scheduler,
+/// `multiplicities` when it works with points that hold several robots (the
+/// page rings them), `non_rigid_only` when it needs non-rigid moves with δ > 0.
 #[wasm_bindgen]
 #[must_use]
 pub fn algorithms() -> String {
@@ -56,6 +57,7 @@ pub fn algorithms() -> String {
                 "name": e.name,
                 "sequential_only": sequential_only,
                 "multiplicities": multiplicities,
+                "non_rigid_only": lcm_algorithms::needs_non_rigid(e.key),
             })
         })
         .collect();
@@ -110,6 +112,8 @@ pub struct WasmSimulation {
     view_time: Option<f64>,
     /// The robot `advance_to_move` last saw start a move.
     moved: i32,
+    /// Sequential Pattern Formation's pattern, to tell a formed run from a stuck one.
+    pattern: Option<lcm_algorithms::sq_pattern_formation::Pattern>,
 }
 
 #[wasm_bindgen]
@@ -122,12 +126,27 @@ impl WasmSimulation {
     pub fn new(config_json: &str) -> Result<WasmSimulation, JsError> {
         let config: SimConfig = serde_json::from_str(config_json)?;
         let sim = lcm_algorithms::simulation(&config)?;
+        let pattern = (config.algorithm == lcm_algorithms::sq_pattern_formation::KEY)
+            .then(|| lcm_algorithms::sq_pattern_formation::pattern_of(&config).ok())
+            .flatten();
         Ok(Self {
             sim,
             frame: Frame::default(),
             positions: Vec::new(),
             view_time: None,
             moved: -1,
+            pattern,
+        })
+    }
+
+    /// Sequential Pattern Formation: 1 if the occupied points form the pattern
+    /// (up to translation, rotation, reflection and scale), 0 if not; -1 for
+    /// any other algorithm. Robots never terminate under SqPF, so a run ends
+    /// stalled either way and the page asks this to say which it is.
+    #[must_use]
+    pub fn pattern_formed(&self) -> i32 {
+        self.pattern.as_ref().map_or(-1, |p| {
+            i32::from(lcm_algorithms::sq_pattern_formation::is_formed(p, &self.sim.robots().pos))
         })
     }
 

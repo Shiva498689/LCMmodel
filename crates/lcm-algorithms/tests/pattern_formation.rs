@@ -208,7 +208,7 @@ fn pattern_formation_is_registered_under_its_ui_key() {
         .iter()
         .find(|e| e.key == "PatternFormation")
         .expect("PatternFormation must be registered");
-    assert_eq!(entry.name, "Pattern Formation");
+    assert_eq!(entry.name, "Pattern Formation (robot.py)");
     let config = SimConfig {
         algorithm: "PatternFormation".to_owned(),
         ..SimConfig::default()

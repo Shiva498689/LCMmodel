@@ -248,6 +248,8 @@ function postFrame(extra = {}) {
     trace: Float64Array.from(trace),
     ended: sim.ended(),
     stop,
+    // SqPF: robots never terminate, so a run ends stalled; say whether the pattern is formed.
+    formed: stop === "stalled" && sim.pattern_formed ? sim.pattern_formed() : -1,
     playing,
     busy: sinceMs ? Math.min(1, busyMs / (now - sinceMs)) : 0,
     pattern,
