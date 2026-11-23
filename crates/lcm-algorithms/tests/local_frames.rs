@@ -8,7 +8,8 @@
 //! `cargo test -p lcm-algorithms --test local_frames -- --nocapture` prints the table.
 
 use lcm_core::{
-    LocalFrame, Look, Model, Point, Rng, RobotState, SchedulerKind, Scratch, SimConfig, View,
+    LocalFrame, Look, Model, MultiplicityModel, Point, Rng, RobotState, SchedulerKind, Scratch,
+    SimConfig, View,
 };
 
 const TRIALS: usize = 300;
@@ -20,6 +21,7 @@ fn model(eps: f64) -> Model {
         visibility: f64::INFINITY,
         width_bound: None,
         height_bound: None,
+        multiplicity: MultiplicityModel::Weak,
     }
 }
 

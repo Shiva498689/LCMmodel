@@ -24,6 +24,9 @@ pub enum Stop {
     MaxTurns = 6,
     /// Only `advance_to_move` returns it: a robot has just started a move.
     Moved = 7,
+    MaxRounds = 8,
+    /// An `await` schedule waits for the next turn or round (adversary mode).
+    AwaitingSchedule = 9,
 }
 
 impl From<StopReason> for Stop {
@@ -36,6 +39,8 @@ impl From<StopReason> for Stop {
             StopReason::MaxTime => Self::MaxTime,
             StopReason::Stalled => Self::Stalled,
             StopReason::MaxTurns => Self::MaxTurns,
+            StopReason::MaxRounds => Self::MaxRounds,
+            StopReason::AwaitingSchedule => Self::AwaitingSchedule,
         }
     }
 }
@@ -218,6 +223,82 @@ impl WasmSimulation {
         js_sys::Float64Array::from(self.sim.compass_deviations())
     }
 
+    /// How many robots see every other robot right now (mutual visibility).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn seeing_everyone(&mut self) -> f64 {
+        self.sim.seeing_everyone() as f64
+    }
+
+    /// k-Async: Looks put off so far because they would have broken the bound.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn deferred_looks(&self) -> f64 {
+        self.sim.deferred_looks() as f64
+    }
+
+    /// SSYNC or FSYNC: robots act in rounds.
+    #[must_use]
+    pub fn in_rounds(&self) -> bool {
+        self.sim.in_rounds()
+    }
+
+    /// SSYNC/FSYNC: rounds begun so far.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn round_count(&self) -> f64 {
+        self.sim.round_count() as f64
+    }
+
+    /// SSYNC/FSYNC: the robots active in the round under way.
+    #[must_use]
+    pub fn round_members(&self) -> js_sys::Uint32Array {
+        let ids: Vec<u32> = self
+            .sim
+            .round_members()
+            .iter()
+            .map(|&i| u32::try_from(i).unwrap_or(u32::MAX))
+            .collect();
+        js_sys::Uint32Array::from(ids.as_slice())
+    }
+
+    /// A schedule ending in `await` has run out: the run waits for the
+    /// adversary's next turn (`push_turn`) or round (`push_round`).
+    #[must_use]
+    pub fn awaiting_schedule(&self) -> bool {
+        self.sim.awaiting_schedule()
+    }
+
+    /// Adds a turn for `robot`, stopped after `stop` of the way (NaN: let it
+    /// arrive, or stop it as the stop policy says).
+    ///
+    /// # Errors
+    /// Not a sequential run with an `await` schedule, no such robot, or a
+    /// stopping point the movement settings do not allow.
+    pub fn push_turn(&mut self, robot: u32, stop: f64) -> Result<(), JsError> {
+        let stop = stop.is_finite().then_some(stop);
+        self.sim.push_turn(robot as usize, stop)?;
+        Ok(())
+    }
+
+    /// Adds a round in which `robots` look and move together.
+    ///
+    /// # Errors
+    /// Not an SSYNC run with `await` rounds, an empty round, or no such robot.
+    pub fn push_round(&mut self, robots: &[u32]) -> Result<(), JsError> {
+        self.sim
+            .push_round(robots.iter().map(|&r| r as usize).collect())?;
+        Ok(())
+    }
+
+    /// Where robot `i` would go if it looked now, `[x, y]`, without changing
+    /// the run; empty if it would not compute (crashed, terminated, …).
+    pub fn preview_target(&mut self, i: u32) -> Box<[f64]> {
+        match self.sim.preview_target(i as usize) {
+            Some(p) => Box::new([p.x, p.y]),
+            None => Box::new([]),
+        }
+    }
+
     /// Sequential scheduler: turns taken so far (one per Look).
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
@@ -225,7 +306,7 @@ impl WasmSimulation {
         self.sim.turn_count() as f64
     }
 
-    /// Sequential scheduler: epochs in which every live robot has had its turn.
+    /// Sequential and SSYNC/FSYNC: epochs in which every live robot has been active.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn epochs_completed(&self) -> f64 {
@@ -267,6 +348,13 @@ impl WasmSimulation {
             kind,
             f64::from(info.outcome.code()),
         ])
+    }
+
+    /// What robot `i` would see and which rule it would apply if it looked
+    /// now, in its algorithm's words (`undefined` if it would not compute or
+    /// the algorithm gives no explanation). Changes nothing about the run.
+    pub fn explain(&mut self, i: u32) -> Option<String> {
+        self.sim.explain(i as usize)
     }
 
     /// Everything known about robot `i` at the current time, as JSON; `null`
