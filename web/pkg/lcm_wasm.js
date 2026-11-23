@@ -75,6 +75,15 @@ export class WasmSimulation {
         return ret;
     }
     /**
+     * `frames: "compass"`: each robot's compass deviation from the global
+     * north, in radians (empty otherwise).
+     * @returns {Float64Array}
+     */
+    compass() {
+        const ret = wasm.wasmsimulation_compass(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @returns {boolean}
      */
     ended() {

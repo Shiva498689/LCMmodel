@@ -85,6 +85,9 @@ JSON form (serde, camelCase is **not** used; names match `main.js params()`):
 | `multiplicities` | u32 | start with this many multiplicity points (robots standing on one spot), made from the start positions whatever their source: that many robots, chosen at random from `random_seed` (a stream of its own), become anchors and other robots are moved onto them. 0 (default): none |
 | `multiplicity_size` | u32 | robots on each starting multiplicity, at least 2; 0 (default) picks a size: a third of the robots for one multiplicity, up to 4 each for several. `multiplicities` × `multiplicity_size` must not exceed `num_of_robots` |
 | `turn_gap` | string | sequential only: `random` (exponential with rate `lambda_rate`, default) or `none` (the next Look at the instant the last turn ends) |
+| `frames` | string | the coordinate system each robot computes in (§7.1): `global` (default, the original), `rotated`, `disoriented`, `compass` |
+| `compass_error` | f64 | `frames` `compass`: the largest deviation of a robot's north from the global north, in degrees, 0 ..= 180 (default 0) |
+| `compass_static` | bool | `frames` `compass`: true (default) draws one deviation per robot for the whole run; false draws a new one at every Look |
 
 Invalid values are a `ConfigError`, never a silent default.
 
@@ -231,7 +234,7 @@ pub trait Algorithm: Send + Sync {
 pub struct Look<'a> {
     pub me: u32,             // my robot id
     pub me_index: usize,     // my index inside `view`
-    pub position: Point,     // my position
+    pub position: Point,     // my position ((0, 0) in a private frame, §7.1)
     pub view: &'a View,      // visible robots, ID order, including me
     pub model: &'a Model,    // ε, precision, visibility, world bounds
 }
@@ -257,6 +260,45 @@ interpolated, never stale. Algorithms may not keep state between looks
 What the core does around `compute` (Byzantine override, "only I am visible"
 termination, omission, the freeze threshold) is fixed by §5 and is not the
 algorithm's business.
+
+### 7.1 Private frames (`frames`)
+
+With `frames` other than `global`, the core gives each Look a frame of the
+robot's own and translates in both directions; the algorithm never sees a
+global coordinate. Its `Look` then contains exactly:
+
+| Field | `global` | `rotated`, `disoriented`, `compass` |
+| --- | --- | --- |
+| `position` | the robot's global position | `(0, 0)`: the robot is the origin of its frame |
+| `view.pos` | global positions | every visible robot (itself included, at `(0, 0)`) in the robot's own axes and unit length |
+| `model.eps`, `model.visibility` | as configured | scaled to the robot's unit length, so "within ε" and "within sight" mean the same as globally |
+| `model.width_bound`, `height_bound` | the world box | `None`: the box is drawn in global coordinates, which the robot does not know |
+| IDs, states, `terminated`, `frozen` | unchanged | unchanged |
+
+The frames themselves:
+
+- `rotated`: a random rotation in [0, 2π) and a random unit length, ½ to 2
+  local units per global unit (log-uniform); the common handedness.
+- `disoriented`: as `rotated`, and the y axis is mirrored with probability ½:
+  no common axes, unit length or handedness. These are the disoriented robots
+  of the sequential-schedulers paper (Flocchini et al., arXiv:2412.10733).
+- `compass`: the global axes turned by the robot's deviation, uniform in
+  ±`compass_error` degrees; unit length and handedness are shared (Izumi et
+  al. 2012). The deviation is drawn once per robot at the start
+  (`compass_static`) or at every Look.
+
+A **new frame is drawn at every Look** (for `compass`, a new deviation when the
+compass is dynamic), so nothing about one Look's frame carries to the next.
+The destination and any circle (`OverlayUpdate::Set`) the algorithm returns are
+mapped back to global coordinates by the core; movement, non-rigid stops and
+the rest of §5 happen in global coordinates as before.
+
+Frames draw from their own generator, seeded with
+`random_seed ^ 0x9E3779B97F4A7C15`, never from the run's stream (§4), so turning
+frames on leaves the scheduler's draws unchanged: a frame-invariant algorithm
+(one that uses only distances and angles between robots, like every ported
+one; `tests/local_frames.rs` checks each registered algorithm) runs the same
+events with frames on as off, up to rounding.
 
 Adding an algorithm = one file implementing `Algorithm` plus one registry
 line in `lcm-algorithms`. A registry entry builds the algorithm's `Plan` from the
