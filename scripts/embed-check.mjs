@@ -89,6 +89,10 @@ const SETUPS = [
     { num_of_faults: 5, fault_type: "byzantine", rigid_movement: false, delta: 5, stop_policy: "fraction", stop_fraction: 0.3,
       scheduler: "sequential", activation_order: "random", max_turns: 100, threshold_precision: 8, random_seed: 99 }, "Infinity"],
   ["SqGathering with stacked points", "SqGathering", { multiplicities: 2, num_of_robots: 12 }, "turn:3"],
+  ["disoriented robots, one at a time, non-rigid", "Gathering",
+    { frames: "disoriented", scheduler: "sequential", rigid_movement: false, delta: 5, num_of_robots: 8 }, "turn:1"],
+  ["an unreliable compass that changes at every look", "Gathering",
+    { frames: "compass", compass_error: 30, compass_static: false, num_of_robots: 8 }, null],
 ];
 const snapshot = () => js(`(() => ({ values: { ...window.lcm.settings.values, custom: undefined }, points: window.lcm.settings.customPoints,
   algorithm: document.getElementById("algorithm").value, playback: document.getElementById("playback").value }))()`);

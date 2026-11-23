@@ -211,6 +211,13 @@ impl WasmSimulation {
         self.sim.sequential()
     }
 
+    /// `frames: "compass"`: each robot's compass deviation from the global
+    /// north, in radians (empty otherwise).
+    #[must_use]
+    pub fn compass(&self) -> js_sys::Float64Array {
+        js_sys::Float64Array::from(self.sim.compass_deviations())
+    }
+
     /// Sequential scheduler: turns taken so far (one per Look).
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
