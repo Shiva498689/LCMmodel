@@ -10,7 +10,7 @@ cd "$repo"
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128 --remap-path-prefix=$repo=/lcm --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
 cargo build -p lcm-wasm --target wasm32-unknown-unknown --release
 wasm-bindgen "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/lcm_wasm.wasm" \
-  --target web --out-dir web/pkg --no-typescript
+  --target web --out-dir web/pkg --no-typescript --remove-name-section
 # Build id from the package's contents. The page loads the worker and the
 # package with ?v=<id>, so a browser can never pair new page code with a
 # cached old core (or the other way round).

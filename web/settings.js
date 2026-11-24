@@ -95,6 +95,16 @@ export const SETTINGS = [
     hint: "Every robot sees every other robot." },
   { key: "visibility_radius", group: "visibility", label: "Radius", kind: "range", min: 10, max: 1000, step: 10, value: 150,
     enabledBy: (v) => !v.unlimited_visibility, hint: "How far a robot can see." },
+  { key: "frames", group: "visibility", label: "Robots' axes", kind: "select", value: "global",
+    options: [["global", "Shared: everyone uses the global axes"], ["rotated", "Own axes, turned and scaled at each look"],
+      ["disoriented", "Disoriented: own axes, unit and handedness"], ["compass", "Unreliable compass"]],
+    hint: "What a robot knows about directions. Except for shared axes, each robot sees itself at (0, 0) and the others in its own axes, and gets new ones at every look." },
+  { key: "compass_error", group: "visibility", label: "Compass error °", kind: "range", min: 0, max: 180, step: 1, value: 0,
+    showIf: (v) => v.frames === "compass",
+    hint: "The most a robot's north can be off the true north, either way." },
+  { key: "compass_static", group: "visibility", label: "Fixed compass", kind: "switch", value: true,
+    showIf: (v) => v.frames === "compass",
+    hint: "On: each robot keeps one error for the whole run. Off: a new error at every look." },
   { key: "num_of_faults", group: "faults", label: "Faulty robots", kind: "range", min: 0, max: 1000, step: 1, value: 0,
     hint: "How many robots, chosen at random, have a fault." },
   { key: "fault_type", group: "faults", label: "Fault type", kind: "select", value: "crash",
@@ -291,6 +301,8 @@ export function buildSettings(root, onChange) {
     // The model of the chosen algorithm wins: a fixed setting keeps its value, a bounded one its bound.
     if (modelLock && key in modelLock.values) v = modelLock.values[key];
     if (modelLock && key in modelLock.min) v = Math.max(modelLock.min[key], Number(v));
+    // A pattern-formation algorithm fixes one robot per pattern point (lockRobots).
+    if (key === "num_of_robots" && robotLock !== null) v = robotLock;
     values[key] = clamp(s, v);
     if (key === "open_world" && values.open_world !== before) {
       // Switching worlds picks that world's natural start.

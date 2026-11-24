@@ -3,11 +3,12 @@
 
 use crate::algorithm::{Algorithm, Assignment, Look, Model, OverlayUpdate, Plan, Scratch, View};
 use crate::config::{
-    Activation, ActivationOrder, ConfigError, FaultSelection, ScheduleEnd, SchedulerKind,
+    Activation, ActivationOrder, ConfigError, FaultSelection, Frames, ScheduleEnd, SchedulerKind,
     SimConfig, StopPolicy, TurnGap,
 };
 use crate::event::{Event, EventKind, EventQueue};
-use crate::geom::{dist, interpolate, Point};
+use crate::geom::{dist, interpolate, Circle, Point};
+use crate::local::LocalFrame;
 use crate::pyfloat::pow10_neg;
 use crate::rng::Rng;
 use crate::robots::{FaultKind, Light, RobotState, Robots};
@@ -131,6 +132,15 @@ pub struct Simulation {
     scratch: Scratch,
     /// `None` for the async scheduler.
     turns: Option<Turns>,
+    frames: Frames,
+    /// Draws the robots' private frames, apart from the run's generator so
+    /// turning frames on changes nothing else about a run.
+    frame_rng: Rng,
+    /// `frames: "compass"`: each robot's current compass deviation (radians),
+    /// drawn from `frame_rng`. Empty otherwise.
+    compass: Vec<f64>,
+    compass_error: f64,
+    compass_static: bool,
 }
 
 const ALL_FAULTS: [FaultKind; 4] = [
@@ -263,7 +273,16 @@ impl Simulation {
                 taken: 0,
                 progress: false,
             }),
+            frames: config.frames,
+            frame_rng: Rng::new(config.random_seed ^ 0x9E37_79B9_7F4A_7C15),
+            compass: Vec::new(),
+            compass_error: config.compass_error.to_radians(),
+            compass_static: config.compass_static,
         };
+        if sim.frames == Frames::Compass {
+            let phi = sim.compass_error;
+            sim.compass = (0..n).map(|_| sim.frame_rng.uniform(-phi, phi)).collect();
+        }
         if sequential {
             sim.next_turn(0.0);
         }
@@ -289,6 +308,14 @@ impl Simulation {
     #[must_use]
     pub fn sequential(&self) -> bool {
         self.turns.is_some()
+    }
+
+    /// `frames: "compass"`: each robot's compass deviation from the global
+    /// north, in radians (the last one drawn, for a dynamic compass). Empty
+    /// for the other frames.
+    #[must_use]
+    pub fn compass_deviations(&self) -> &[f64] {
+        &self.compass
     }
 
     /// Visualize ticks among the events handled: they belong to no robot.
@@ -536,6 +563,93 @@ impl Simulation {
         me_index
     }
 
+    /// Runs `f` on robot `i`'s Look of the view just built, in its own frame
+    /// when frames are on (docs/core-schema.md §7.1); returns its result and
+    /// that frame (`None` for global coordinates).
+    fn in_frame<R>(
+        &mut self,
+        i: usize,
+        me_index: usize,
+        position: Point,
+        frame_rng: &mut Rng,
+        f: impl FnOnce(&dyn Algorithm, &Look<'_>, &mut Scratch) -> R,
+    ) -> (R, Option<LocalFrame>) {
+        let algorithm = self.algorithms[usize::from(self.robots.algo[i])].as_ref();
+        if self.frames == Frames::Global {
+            let look = Look {
+                me: robot_id_u32(i),
+                me_index,
+                position,
+                view: &self.view,
+                model: &self.model,
+            };
+            return (f(algorithm, &look, &mut self.scratch), None);
+        }
+        let frame = if self.frames == Frames::Compass {
+            if !self.compass_static {
+                let phi = self.compass_error;
+                self.compass[i] = frame_rng.uniform(-phi, phi);
+            }
+            // Axes turned by the deviation: a point due north of the robot
+            // reads as `deviation` off its own north.
+            LocalFrame {
+                origin: position,
+                angle: -self.compass[i],
+                scale: 1.0,
+                reflect: false,
+            }
+        } else {
+            LocalFrame::random(position, frame_rng, self.frames == Frames::Rotated)
+        };
+        for p in &mut self.view.pos {
+            *p = frame.to_local(*p);
+        }
+        let model = Model {
+            eps: self.model.eps * frame.scale,
+            visibility: self.model.visibility * frame.scale,
+            // The world box is drawn in global coordinates, unknown to a
+            // robot with a frame of its own.
+            width_bound: None,
+            height_bound: None,
+            ..self.model
+        };
+        let look = Look {
+            me: robot_id_u32(i),
+            me_index,
+            position: Point::new(0.0, 0.0),
+            view: &self.view,
+            model: &model,
+        };
+        (f(algorithm, &look, &mut self.scratch), Some(frame))
+    }
+
+    /// Robot `i`'s Compute on the view just built, in its own frame when
+    /// frames are on: the destination and circle come back in global
+    /// coordinates. Returns `(target, terminate, overlay)`.
+    fn compute_in_frame(
+        &mut self,
+        i: usize,
+        me_index: usize,
+        position: Point,
+        rng: &mut Rng,
+        frame_rng: &mut Rng,
+    ) -> (Point, bool, OverlayUpdate) {
+        let (d, frame) = self.in_frame(i, me_index, position, frame_rng, |a, look, scratch| {
+            a.compute(look, rng, scratch)
+        });
+        let Some(frame) = frame else {
+            return (d.target, d.terminate, d.overlay);
+        };
+        let overlay = match d.overlay {
+            OverlayUpdate::Set(c) => OverlayUpdate::Set(Circle::new(
+                frame.to_global(c.center),
+                c.radius / frame.scale,
+            )),
+            other => other,
+        };
+        (frame.to_global(d.target), d.terminate, overlay)
+    }
+
     /// `Robot.look` followed by the LOOK branch of `handle_event`.
     fn look(&mut self, i: usize, t: f64) -> StepOutcome {
         let me_index = self.build_view(i, t);
@@ -572,30 +686,42 @@ impl Simulation {
                 r.terminated[i] = true;
                 self.wait(i, t);
             } else {
-                let look = Look {
-                    me: robot_id_u32(i),
-                    me_index,
-                    position,
-                    view: &self.view,
-                    model: &self.model,
+                let (target, terminate, overlay) = if self.frames == Frames::Global {
+                    // The common case, as the original computes it.
+                    let look = Look {
+                        me: robot_id_u32(i),
+                        me_index,
+                        position,
+                        view: &self.view,
+                        model: &self.model,
+                    };
+                    let algorithm = &self.algorithms[usize::from(self.robots.algo[i])];
+                    let d = algorithm.compute(&look, &mut self.rng, &mut self.scratch);
+                    (d.target, d.terminate, d.overlay)
+                } else {
+                    let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
+                    let mut frame_rng = std::mem::replace(&mut self.frame_rng, Rng::new(0));
+                    let out =
+                        self.compute_in_frame(i, me_index, position, &mut rng, &mut frame_rng);
+                    self.rng = rng;
+                    self.frame_rng = frame_rng;
+                    out
                 };
-                let algorithm = &self.algorithms[usize::from(self.robots.algo[i])];
-                let decision = algorithm.compute(&look, &mut self.rng, &mut self.scratch);
                 let r = &mut self.robots;
-                r.target[i] = Some(decision.target);
-                match decision.overlay {
+                r.target[i] = Some(target);
+                match overlay {
                     OverlayUpdate::Keep => {}
                     OverlayUpdate::Set(c) => r.overlay[i] = Some(c),
                     OverlayUpdate::Clear => r.overlay[i] = None,
                 }
-                if decision.terminate {
+                if terminate {
                     r.terminated[i] = true;
                 }
                 if r.terminated[i] {
                     self.wait(i, t);
                 } else {
                     let omit = r.fault[i] == FaultKind::Omission && self.rng.random() < 0.5;
-                    if omit || dist(decision.target, position) < self.model.eps {
+                    if omit || dist(target, position) < self.model.eps {
                         self.robots.frozen[i] = true;
                         self.wait(i, t);
                     } else {

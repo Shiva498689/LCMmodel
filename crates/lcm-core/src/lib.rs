@@ -9,6 +9,7 @@ mod config;
 mod event;
 mod frame;
 pub mod geom;
+mod local;
 pub mod pyfloat;
 mod rng;
 mod robots;
@@ -19,12 +20,13 @@ pub use algorithm::{
     Algorithm, Assignment, Decision, Look, Model, OverlayUpdate, Plan, Scratch, TaskColor, View,
 };
 pub use config::{
-    Activation, ActivationOrder, ConfigError, FaultSelection, PatternShape, ScheduleEnd,
+    Activation, ActivationOrder, ConfigError, FaultSelection, Frames, PatternShape, ScheduleEnd,
     SchedulerKind, SimConfig, StopPolicy, TurnGap, MAX_ROBOTS,
 };
 pub use event::{Event, EventKind, EventQueue};
 pub use frame::{flag_state, Frame, FLAG_FROZEN, FLAG_HAS_TARGET, FLAG_TERMINATED};
 pub use geom::{Circle, Point};
+pub use local::LocalFrame;
 pub use rng::Rng;
 pub use robots::{FaultKind, Light, RobotState, Robots, LIGHT_COOLDOWN};
 pub use sim::{Budget, Simulation, StepInfo, StepOutcome, StopReason};

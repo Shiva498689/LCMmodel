@@ -50,13 +50,10 @@ function config() {
   const c = readConfig(settings.values, $("algorithm").value, settings.customPoints);
   const shape = $("target-pattern")?.value || "star"; // Pattern Formation only; others ignore it
   c.target_pattern = shape === "custom" ? "star" : shape;
-  if (c.algorithm === "SqPatternFormation") {
-    // The pattern P̂ is the robots' input, as a set of points; any number of robots n ≥ |P̂| may form it.
-    c.target_points = shape === "custom" ? customPattern().points : shapePoints(shape);
-  }
-  if (c.algorithm === "PatternFormation") {
-    // One robot per point, as in the pattern-formation model: the robot count follows the points
-    // (a predefined shape is its corners, see SHAPE_POINTS).
+  if (PATTERN_ALGORITHMS.includes(c.algorithm)) {
+    // One robot per pattern point: the robot count follows the points (a predefined shape is its
+    // corners, see SHAPE_POINTS). SqPF's paper allows n ≥ |P̂| (extra robots stack on pattern points);
+    // the page fixes n = |P̂| so that no robot is left over.
     c.target_points = shape === "custom" ? customPattern().points : shapePoints(shape);
     c.num_of_robots = c.target_points.length;
     if (Array.isArray(c.initial_positions) && c.initial_positions.length !== c.num_of_robots) c.initial_positions = null;
@@ -66,8 +63,14 @@ function config() {
 
 /** The algorithms that form a pattern chosen in the toolbar's pattern list. */
 const PATTERN_ALGORITHMS = ["PatternFormation", "SqPatternFormation"];
-/** PatternFormation (the robot.py port) needs exactly one robot per point; SqPF any n ≥ |P̂|. */
-const onePerPoint = () => $("algorithm").value === "PatternFormation";
+/** One robot per pattern point: the Robots slider follows the chosen pattern and is locked. */
+const onePerPoint = () => PATTERN_ALGORITHMS.includes($("algorithm").value);
+/**
+ * Registered algorithms the page does not offer. PatternFormation, the robot.py port, duplicates
+ * Sequential Pattern Formation outside the paper's model; it stays in the core for the CLI and the
+ * recorded-run parity tests (fixtures/pattern_formation_*.json).
+ */
+const HIDDEN_ALGORITHMS = ["PatternFormation"];
 
 /** The pattern list applies only to the pattern-formation algorithms; hide it otherwise. */
 function syncPatternVisibility() {
@@ -78,8 +81,6 @@ function syncPatternVisibility() {
   else settings.lockRobots(on && onePerPoint() ? shapePoints($("target-pattern").value).length : null);
 }
 
-/** Points of the pattern now chosen (a predefined shape's corners, or the custom points). */
-const chosenPattern = () => ($("target-pattern").value === "custom" ? customPattern().points : shapePoints($("target-pattern").value));
 
 /**
  * The settings an algorithm's paper fixes, for settings.lockModel: SqGathering and SqPF run only under
@@ -89,11 +90,13 @@ const chosenPattern = () => ($("target-pattern").value === "custom" ? customPatt
 function modelLockFor(a) {
   if (!a?.sequential_only && !a?.non_rigid_only) return null;
   const values = { scheduler: "sequential", unlimited_visibility: true, num_of_faults: 0 };
-  if (a.non_rigid_only) values.rigid_movement = false;
+  // SqPF gives every robot its own private compass (direction, unit, handedness): the core's
+  // "Robots' axes" setting stays Global so that it does not add a second frame on top.
+  if (a.non_rigid_only) Object.assign(values, { rigid_movement: false, frames: "global" });
   return {
     values,
     min: a.non_rigid_only ? { delta: 1 } : {},
-    reason: `Fixed by ${a.name}: its paper's robot model (sequential scheduler${a.non_rigid_only ? ", non-rigid moves with δ > 0" : ""}, unlimited visibility, no faults)`,
+    reason: `Fixed by ${a.name}: its paper's robot model (sequential scheduler${a.non_rigid_only ? ", non-rigid moves with δ > 0, each robot's own axes" : ""}, unlimited visibility, no faults)`,
   };
 }
 
@@ -136,7 +139,7 @@ function showPatternProblem() {
   const s = points.length === 1 ? "" : "s";
   $("pattern_count").textContent = onePerPoint()
     ? `${points.length} point${s} = ${points.length} robot${s}`
-    : `${points.length} point${s}: at least ${points.length} robot${s}`;
+    : `${points.length} point${s}: ${points.length} robot${s}`;
   // PatternFormation: one robot per point, so the Robots slider follows the points and is locked.
   if (points.length) settings.lockRobots(onePerPoint() ? points.length : null);
   $("pattern_error").hidden = !errors.length;
@@ -161,14 +164,6 @@ function newRun({ quiet = false } = {}) {
   if (problem) {
     if (!quiet) toast(`Fix the coordinates first: line ${problem[0].line}, ${problem[0].message}`, true);
     return false;
-  }
-  if ($("algorithm").value === "SqPatternFormation" && settings.values.pattern !== "custom") {
-    // The trivial assumption of the paper: at least as many robots as pattern points.
-    const k = chosenPattern().length;
-    if (settings.values.num_of_robots < k) {
-      settings.set("num_of_robots", k, false);
-      if (!quiet) toast(`A ${k}-point pattern needs at least ${k} robots: Robots set to ${k}`);
-    }
   }
   const c = config();
   const v = settings.values;
@@ -378,7 +373,8 @@ $("examples_menu").addEventListener("keydown", (e) => {
   items[(to + items.length) % items.length].focus();
 });
 
-client.on("ready", ({ algorithms: list, patterns }) => {
+client.on("ready", ({ algorithms: all, patterns }) => {
+  const list = all.filter((a) => !HIDDEN_ALGORITHMS.includes(a.key));
   algorithms = list;
   $("algorithm").innerHTML = list.map((a) => `<option value="${a.key}">${a.name}</option>`).join("");
   const asked = list.find((a) => a.key === link.algorithm);
@@ -661,10 +657,6 @@ $("algorithm").addEventListener("change", () => {
   settings.lockModel(modelLockFor(a));
   if (a?.sequential_only && !wasSequential) {
     toast(`${a.name} runs one robot at a time: Scheduler set to Sequential (fixed while it is chosen)`);
-  }
-  if (a?.key === "SqPatternFormation" && settings.values.pattern !== "custom" && settings.values.num_of_robots > 60) {
-    // Walkers move one at a time, so a big swarm takes very long; start from the pattern's size.
-    settings.set("num_of_robots", chosenPattern().length, false);
   }
   // A new algorithm is a new experiment: start it now, even mid-run.
   if (state === "loading") return;

@@ -162,10 +162,15 @@ check("simulator: picking SqPF fixes the sequential scheduler and non-rigid move
   await js("JSON.stringify(window.lcm.settings.values)"));
 check("simulator: SqPF shows the pattern list", !(await js("document.getElementById('target-pattern').hidden")));
 await js(`(() => { const t = document.getElementById("target-pattern"); t.value = "pentagon"; t.dispatchEvent(new Event("change")); })()`);
+check("simulator: the robot.py Pattern Formation is not offered next to SqPF",
+  !(await js(`[...document.getElementById("algorithm").options].some((o) => o.value === "PatternFormation")`)));
 await js(`window.lcm.settings.set("num_of_robots", 7)`);
 await js("document.getElementById('reset').click()");
 await sleep(400);
-check("simulator: SqPF with 7 robots for 5 points is ready (n ≥ |P̂|)", (await js("window.lcm.state")) === "ready");
+check("simulator: SqPF fixes one robot per pattern point (5 for a pentagon) and locks the count",
+  await js(`window.lcm.state === "ready" && window.lcm.settings.values.num_of_robots === 5
+    && window.lcm.renderer.frame.flags.length === 5 && document.getElementById("set-num_of_robots-n").disabled`),
+  await js("String(window.lcm.settings.values.num_of_robots)"));
 await js("document.getElementById('playback').value = 'Infinity'; document.getElementById('playback').dispatchEvent(new Event('change'))");
 await js("document.getElementById('play').click()");
 const formed = await until("window.lcm.state === 'ended'", 90000);

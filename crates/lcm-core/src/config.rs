@@ -30,6 +30,28 @@ pub enum SchedulerKind {
     Sequential,
 }
 
+/// The coordinate system each robot computes in (docs/core-schema.md §7.1).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum Frames {
+    /// Everyone shares the global frame (the original simulator).
+    #[default]
+    Global,
+    /// At each Look the robot gets a new frame of its own: itself at the
+    /// origin, a random rotation, a random unit length (½ to 2 local units per
+    /// global unit, log-uniform), the common handedness.
+    Rotated,
+    /// As `Rotated`, and the handedness is random too (no chirality): the
+    /// disoriented robots of the sequential-schedulers paper.
+    Disoriented,
+    /// An unreliable compass (Izumi et al. 2012): the robot's axes are the
+    /// global ones turned by a deviation of at most `compass_error` degrees
+    /// either way; unit length and handedness are shared. The deviation is
+    /// drawn once per robot (`compass_static`) or at every Look.
+    Compass,
+}
+
 /// Sequential scheduler: who takes the next turn. Every epoch gives each
 /// robot that is neither crashed nor terminated exactly one turn.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -168,6 +190,14 @@ pub struct SimConfig {
     pub threshold_precision: u8,
     pub random_seed: u64,
     pub multiplicity_detection: bool,
+    /// Global coordinates, or a private frame per robot and Look.
+    pub frames: Frames,
+    /// `frames: "compass"`: the largest deviation of a robot's compass from
+    /// the global north, in degrees (0 to 180).
+    pub compass_error: f64,
+    /// `frames: "compass"`: each robot keeps one deviation for the whole run
+    /// (static compass); off, it gets a new one at every Look (dynamic).
+    pub compass_static: bool,
     pub max_events: Option<u64>,
     pub max_time: Option<f64>,
     /// No world box: algorithms get no bounds. Off reproduces the original.
@@ -223,6 +253,9 @@ impl Default for SimConfig {
             threshold_precision: 5,
             random_seed: 12345,
             multiplicity_detection: false,
+            frames: Frames::Global,
+            compass_error: 0.0,
+            compass_static: true,
             max_events: None,
             max_time: None,
             open_world: false,
@@ -255,8 +288,10 @@ pub enum ConfigError {
         index: usize,
     },
     Start(String),
-    /// A sequential-scheduler setting that cannot work as given.
+    /// A scheduler setting that cannot work as given.
     Schedule(String),
+    /// A setting of the robot model (frames, compass) outside its range.
+    Model(String),
     /// The chosen algorithm cannot run with these settings (for example, it
     /// needs the sequential scheduler).
     Unsupported(String),
@@ -272,9 +307,10 @@ impl fmt::Display for ConfigError {
             }
             Self::Precision(p) => write!(f, "threshold_precision must be 1..=15, got {p}"),
             Self::Position { index } => write!(f, "initial_positions[{index}] is not finite"),
-            Self::Start(message) | Self::Schedule(message) | Self::Unsupported(message) => {
-                f.write_str(message)
-            }
+            Self::Start(message)
+            | Self::Schedule(message)
+            | Self::Model(message)
+            | Self::Unsupported(message) => f.write_str(message),
         }
     }
 }
@@ -342,6 +378,12 @@ impl SimConfig {
             self.multiplicity_size as usize,
         )
         .map_err(ConfigError::Start)?;
+        if !(self.compass_error.is_finite() && (0.0..=180.0).contains(&self.compass_error)) {
+            return Err(ConfigError::Model(format!(
+                "compass_error must be between 0 and 180 degrees, got {}",
+                self.compass_error
+            )));
+        }
         if let Some(turns) = self.max_turns {
             if turns == 0 {
                 return Err(ConfigError::Schedule(

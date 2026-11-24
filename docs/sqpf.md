@@ -11,7 +11,7 @@ below are that PDF's.
 The older `PatternFormation` entry (shown as *Pattern Formation (robot.py)*) is the port of the
 original Python simulator. It gives every robot the world's axes and uses robot IDs to break ties,
 so it is **not** the paper's model. It stays only because the recorded Python runs in `fixtures/`
-replay it.
+replay it; the page does not offer it.
 
 ## 1. The robots (Section 2.1, p. 4)
 
@@ -28,7 +28,7 @@ replay it.
 | Sequential scheduler 𝒮𝒬 (Section 2.2, p. 5): one robot per round, fair | The registry refuses the async scheduler (UPF is unsolvable under FSYNC, hence under SSYNC and ASYNC: Theorem 1, p. 6). On the page, choosing the algorithm switches the scheduler to Sequential and greys it out. |
 | A snapshot of all robots (Section 8.2, p. 24: "the robots can view the positions of all other robots") | Limited visibility is refused. |
 | No faults in the model | Faulty robots are refused. |
-| UPF: "form any arbitrary pattern P̂, given as their sole input and to no longer move", n ≥ \|P̂\| (Section 2.3, p. 5) | The pattern is `target_points`, or the corners of `target_pattern`. Any n ≥ k is allowed; n < k is refused. Robots never terminate: the run stops when a whole epoch passes with no robot moving (`Stalled`), and the page then checks Q ∈ 𝓑(P̂) and says **Formed**. |
+| UPF: "form any arbitrary pattern P̂, given as their sole input and to no longer move", n ≥ \|P̂\| (Section 2.3, p. 5) | The pattern is `target_points`, or the corners of `target_pattern`. Any n ≥ k is allowed (CLI, config); n < k is refused. The page fixes n = k: the Robots count follows the chosen pattern and is locked. Robots never terminate: the run stops when a whole epoch passes with no robot moving (`Stalled`), and the page then checks Q ∈ 𝓑(P̂) and says **Formed**. |
 
 ## 2. Paper line → code
 
@@ -123,5 +123,6 @@ cargo run --release -p lcm-cli -- run sqpf.json
 ```
 
 On the page: *Algorithm → Sequential Pattern Formation*, then pick a shape (or *Custom coordinates…*)
-in the list next to it. The scheduler, rigid movement, visibility and faults are fixed while it is
-chosen.
+in the list next to it. The scheduler, rigid movement, visibility, faults, the robots' axes (Global:
+the algorithm gives each robot its own compass) and the number of robots (one per pattern point) are
+fixed while it is chosen.
