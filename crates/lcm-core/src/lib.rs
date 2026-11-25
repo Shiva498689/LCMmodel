@@ -10,6 +10,7 @@ mod event;
 mod frame;
 pub mod geom;
 mod local;
+pub mod occupancy;
 pub mod pyfloat;
 mod rng;
 mod robots;
@@ -20,8 +21,8 @@ pub use algorithm::{
     Algorithm, Assignment, Decision, Look, Model, OverlayUpdate, Plan, Scratch, TaskColor, View,
 };
 pub use config::{
-    Activation, ActivationOrder, ConfigError, FaultSelection, Frames, ScheduleEnd, SchedulerKind,
-    SimConfig, StopPolicy, TurnGap, MAX_ROBOTS,
+    Activation, ActivationOrder, ConfigError, FaultSelection, Frames, MultiplicityModel,
+    ScheduleEnd, SchedulerKind, SimConfig, StopPolicy, TurnGap, MAX_ROBOTS,
 };
 pub use event::{Event, EventKind, EventQueue};
 pub use frame::{flag_state, Frame, FLAG_FROZEN, FLAG_HAS_TARGET, FLAG_TERMINATED};

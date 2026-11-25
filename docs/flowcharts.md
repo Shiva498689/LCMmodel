@@ -126,7 +126,7 @@ flowchart TD
 | Every live robot terminated? | Crashed and Byzantine robots don't count: the run ends once all the others have terminated. |
 | Ended | advance() returns Ended and the page shows that every robot terminated. |
 
-`advance` — [`crates/lcm-core/src/sim.rs:434`](../crates/lcm-core/src/sim.rs#L434)
+`advance` — [`crates/lcm-core/src/sim.rs:688`](../crates/lcm-core/src/sim.rs#L688)
 
 ```rust
 /// Handles events until the budget, a limit or the end is reached.
@@ -152,7 +152,7 @@ pub fn advance(&mut self, budget: Budget) -> StopReason {
 }
 ```
 
-`step` — [`crates/lcm-core/src/sim.rs:456`](../crates/lcm-core/src/sim.rs#L456)
+`step` — [`crates/lcm-core/src/sim.rs:710`](../crates/lcm-core/src/sim.rs#L710)
 
 ```rust
 /// Handles the next event.
@@ -163,7 +163,7 @@ pub fn step(&mut self) -> StepInfo {
         kind: None,
         outcome: StepOutcome::Ended,
     };
-    if self.ended || self.stalled || self.turn_limit {
+    if self.ended || self.stalled || self.turn_limit || self.round_limit || self.awaiting {
         return ended;
     }
     let Some(event) = self.queue.pop() else {
@@ -208,7 +208,9 @@ pub fn step(&mut self) -> StepInfo {
         self.schedule_activation(t, i);
         return info(StepOutcome::Ignored);
     }
-    if self.robots.terminated[i] {
+    // A round's member that terminated when it computed still has to
+    // finish its Look, which ends its part of the round.
+    if self.robots.terminated[i] && !self.rounds.as_ref().is_some_and(|r| r.decided[i]) {
         return info(StepOutcome::Ignored);
     }
 
@@ -217,7 +219,13 @@ pub fn step(&mut self) -> StepInfo {
             if let Some(turns) = self.turns.as_mut() {
                 turns.taken += 1;
             }
-            self.look(i, t)
+            if self.rounds.is_some() {
+                self.round_look(i, t)
+            } else if self.bounded.is_some() && !self.may_look(i, t) {
+                StepOutcome::Ignored
+            } else {
+                self.look(i, t)
+            }
         }
         EventKind::Wait => {
             self.wait(i, t);
@@ -236,6 +244,9 @@ pub fn step(&mut self) -> StepInfo {
         if let Some(turns) = self.turns.as_mut() {
             turns.progress = true;
         }
+        if let Some(rounds) = self.rounds.as_mut() {
+            rounds.progress = true;
+        }
     }
     if self.globally_terminated() {
         self.ended = true;
@@ -245,7 +256,7 @@ pub fn step(&mut self) -> StepInfo {
 }
 ```
 
-`schedule_activation` — [`crates/lcm-core/src/sim.rs:840`](../crates/lcm-core/src/sim.rs#L840)
+`schedule_activation` — [`crates/lcm-core/src/sim.rs:1218`](../crates/lcm-core/src/sim.rs#L1218)
 
 ```rust
 /// `Scheduler.generate_event`: the random delay is drawn even when a
@@ -255,6 +266,13 @@ fn schedule_activation(&mut self, previous: f64, i: usize) {
     if self.turns.is_some() {
         self.next_turn(previous);
         return;
+    }
+    if self.rounds.is_some() {
+        self.member_done(previous, i);
+        return;
+    }
+    if self.bounded.is_some() {
+        self.cycle_done(previous, i);
     }
     let delay = self.rng.exponential(1.0 / self.lambda);
     let time = previous + delay.max(1e-9);
@@ -273,109 +291,17 @@ fn schedule_activation(&mut self, previous: f64, i: usize) {
 }
 ```
 
-`look` — [`crates/lcm-core/src/sim.rs:653`](../crates/lcm-core/src/sim.rs#L653)
+`look` — [`crates/lcm-core/src/sim.rs:978`](../crates/lcm-core/src/sim.rs#L978)
 
 ```rust
 /// `Robot.look` followed by the LOOK branch of `handle_event`.
 fn look(&mut self, i: usize, t: f64) -> StepOutcome {
-    let me_index = self.build_view(i, t);
-    let r = &mut self.robots;
-    r.state[i] = RobotState::Look;
-    r.set_light(i, Light::Blue, t);
-    let position = r.pos[i];
-
-    if r.fault[i] == FaultKind::Byzantine {
-        let reach = self
-            .view
-            .id
-            .iter()
-            .zip(&self.view.pos)
-            .filter(|(id, _)| **id as usize != i)
-            .map(|(_, p)| dist(position, *p))
-            .fold(None, |best: Option<f64>, d| {
-                Some(best.map_or(d, |b| if d > b { d } else { b }))
-            })
-            .map_or(10.0, |d| d * 0.5);
-        let angle = self.rng.uniform(0.0, 2.0 * std::f64::consts::PI);
-        r.target[i] = Some(Point::new(
-            position.x + reach * libm::cos(angle),
-            position.y + reach * libm::sin(angle),
-        ));
-        r.frozen[i] = false;
-        r.terminated[i] = false;
-    } else {
-        let active = (0..self.view.len())
-            .filter(|&k| !self.view.terminated[k] && self.view.state[k] != RobotState::Crash)
-            .count();
-        if active <= 1 {
-            r.frozen[i] = true;
-            r.terminated[i] = true;
-            self.wait(i, t);
-        } else {
-            let (target, terminate, overlay) = if self.frames == Frames::Global {
-                // The common case, as the original computes it.
-                let look = Look {
-                    me: robot_id_u32(i),
-                    me_index,
-                    position,
-                    view: &self.view,
-                    model: &self.model,
-                };
-                let algorithm = &self.algorithms[usize::from(self.robots.algo[i])];
-                let d = algorithm.compute(&look, &mut self.rng, &mut self.scratch);
-                (d.target, d.terminate, d.overlay)
-            } else {
-                let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
-                let mut frame_rng = std::mem::replace(&mut self.frame_rng, Rng::new(0));
-                let out =
-                    self.compute_in_frame(i, me_index, position, &mut rng, &mut frame_rng);
-                self.rng = rng;
-                self.frame_rng = frame_rng;
-                out
-            };
-            let r = &mut self.robots;
-            r.target[i] = Some(target);
-            match overlay {
-                OverlayUpdate::Keep => {}
-                OverlayUpdate::Set(c) => r.overlay[i] = Some(c),
-                OverlayUpdate::Clear => r.overlay[i] = None,
-            }
-            if terminate {
-                r.terminated[i] = true;
-            }
-            if r.terminated[i] {
-                self.wait(i, t);
-            } else {
-                let omit = r.fault[i] == FaultKind::Omission && self.rng.random() < 0.5;
-                if omit || dist(target, position) < self.model.eps {
-                    self.robots.frozen[i] = true;
-                    self.wait(i, t);
-                } else {
-                    self.robots.frozen[i] = false;
-                }
-            }
-        }
-    }
-
-    let r = &self.robots;
-    if r.state[i] == RobotState::Crash {
-        return StepOutcome::Crashed;
-    }
-    if r.terminated[i] {
-        if self.turns.is_some() {
-            self.next_turn(t);
-        }
-        return StepOutcome::Terminated;
-    }
-    if r.frozen[i] {
-        self.schedule_activation(t, i);
-        return StepOutcome::Frozen;
-    }
-    self.begin_move(i, t)
+    self.decide(i, t);
+    self.finish_look(i, t)
 }
 ```
 
-`wait` — [`crates/lcm-core/src/sim.rs:816`](../crates/lcm-core/src/sim.rs#L816)
+`wait` — [`crates/lcm-core/src/sim.rs:1194`](../crates/lcm-core/src/sim.rs#L1194)
 
 ```rust
 /// `Robot.wait`.
@@ -403,7 +329,7 @@ fn wait(&mut self, i: usize, t: f64) {
 }
 ```
 
-`globally_terminated` — [`crates/lcm-core/src/sim.rs:964`](../crates/lcm-core/src/sim.rs#L964)
+`globally_terminated` — [`crates/lcm-core/src/sim.rs:1561`](../crates/lcm-core/src/sim.rs#L1561)
 
 ```rust
 /// `Scheduler._check_global_termination`: every robot that is neither
@@ -512,128 +438,72 @@ flowchart TD
 | Schedule WAIT at arrival | A WAIT event goes in the queue for the moment the robot reaches its target; other robots see it moving until then. |
 | Arrive | At the arrival time the robot is placed exactly on its target, its light turns green, and its next LOOK is scheduled. |
 
-`look` — [`crates/lcm-core/src/sim.rs:653`](../crates/lcm-core/src/sim.rs#L653)
+`look` — [`crates/lcm-core/src/sim.rs:978`](../crates/lcm-core/src/sim.rs#L978)
 
 ```rust
 /// `Robot.look` followed by the LOOK branch of `handle_event`.
 fn look(&mut self, i: usize, t: f64) -> StepOutcome {
-    let me_index = self.build_view(i, t);
-    let r = &mut self.robots;
-    r.state[i] = RobotState::Look;
-    r.set_light(i, Light::Blue, t);
-    let position = r.pos[i];
-
-    if r.fault[i] == FaultKind::Byzantine {
-        let reach = self
-            .view
-            .id
-            .iter()
-            .zip(&self.view.pos)
-            .filter(|(id, _)| **id as usize != i)
-            .map(|(_, p)| dist(position, *p))
-            .fold(None, |best: Option<f64>, d| {
-                Some(best.map_or(d, |b| if d > b { d } else { b }))
-            })
-            .map_or(10.0, |d| d * 0.5);
-        let angle = self.rng.uniform(0.0, 2.0 * std::f64::consts::PI);
-        r.target[i] = Some(Point::new(
-            position.x + reach * libm::cos(angle),
-            position.y + reach * libm::sin(angle),
-        ));
-        r.frozen[i] = false;
-        r.terminated[i] = false;
-    } else {
-        let active = (0..self.view.len())
-            .filter(|&k| !self.view.terminated[k] && self.view.state[k] != RobotState::Crash)
-            .count();
-        if active <= 1 {
-            r.frozen[i] = true;
-            r.terminated[i] = true;
-            self.wait(i, t);
-        } else {
-            let (target, terminate, overlay) = if self.frames == Frames::Global {
-                // The common case, as the original computes it.
-                let look = Look {
-                    me: robot_id_u32(i),
-                    me_index,
-                    position,
-                    view: &self.view,
-                    model: &self.model,
-                };
-                let algorithm = &self.algorithms[usize::from(self.robots.algo[i])];
-                let d = algorithm.compute(&look, &mut self.rng, &mut self.scratch);
-                (d.target, d.terminate, d.overlay)
-            } else {
-                let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
-                let mut frame_rng = std::mem::replace(&mut self.frame_rng, Rng::new(0));
-                let out =
-                    self.compute_in_frame(i, me_index, position, &mut rng, &mut frame_rng);
-                self.rng = rng;
-                self.frame_rng = frame_rng;
-                out
-            };
-            let r = &mut self.robots;
-            r.target[i] = Some(target);
-            match overlay {
-                OverlayUpdate::Keep => {}
-                OverlayUpdate::Set(c) => r.overlay[i] = Some(c),
-                OverlayUpdate::Clear => r.overlay[i] = None,
-            }
-            if terminate {
-                r.terminated[i] = true;
-            }
-            if r.terminated[i] {
-                self.wait(i, t);
-            } else {
-                let omit = r.fault[i] == FaultKind::Omission && self.rng.random() < 0.5;
-                if omit || dist(target, position) < self.model.eps {
-                    self.robots.frozen[i] = true;
-                    self.wait(i, t);
-                } else {
-                    self.robots.frozen[i] = false;
-                }
-            }
-        }
-    }
-
-    let r = &self.robots;
-    if r.state[i] == RobotState::Crash {
-        return StepOutcome::Crashed;
-    }
-    if r.terminated[i] {
-        if self.turns.is_some() {
-            self.next_turn(t);
-        }
-        return StepOutcome::Terminated;
-    }
-    if r.frozen[i] {
-        self.schedule_activation(t, i);
-        return StepOutcome::Frozen;
-    }
-    self.begin_move(i, t)
+    self.decide(i, t);
+    self.finish_look(i, t)
 }
 ```
 
-`build_view` — [`crates/lcm-core/src/sim.rs:545`](../crates/lcm-core/src/sim.rs#L545)
+`build_view` — [`crates/lcm-core/src/sim.rs:810`](../crates/lcm-core/src/sim.rs#L810)
 
 ```rust
-/// The snapshot robot `i` takes at `t`, filtered by its visibility.
+/// The snapshot robot `i` takes at `t`, filtered by its visibility (and,
+/// with obstructed visibility, by the robots in the way). In a round,
+/// flags are those from the start of the round.
 fn build_view(&mut self, i: usize, t: f64) -> usize {
     let me = self.robots.pos[i];
     let visibility = self.model.visibility;
     let unlimited = visibility == f64::INFINITY;
+    let eps = self.model.eps;
+    if self.snapshot.is_none() && !self.obstructed {
+        // The common case (async and sequential runs): the original loop, kept tight.
+        self.view.clear();
+        let mut me_index = 0;
+        for j in 0..self.robots.len() {
+            let p = self.robots.position_at(j, t, eps);
+            if unlimited || dist(me, p) <= visibility {
+                if j == i {
+                    me_index = self.view.len();
+                }
+                let r = &self.robots;
+                self.view
+                    .push(robot_id_u32(j), p, r.state[j], r.terminated[j], r.frozen[j]);
+            }
+        }
+        return me_index;
+    }
+    if self.obstructed {
+        self.positions.clear();
+        for j in 0..self.robots.len() {
+            self.positions.push(self.robots.position_at(j, t, eps));
+        }
+    }
     self.view.clear();
     let mut me_index = 0;
     for j in 0..self.robots.len() {
-        let p = self.robots.position_at(j, t, self.model.eps);
-        if unlimited || dist(me, p) <= visibility {
-            if j == i {
-                me_index = self.view.len();
-            }
-            let r = &self.robots;
-            self.view
-                .push(robot_id_u32(j), p, r.state[j], r.terminated[j], r.frozen[j]);
+        let p = self.robots.position_at(j, t, eps);
+        if !(unlimited || dist(me, p) <= visibility) {
+            continue;
         }
+        if j != i && self.obstructed && self.hidden(i, me, j, p) {
+            continue;
+        }
+        if j == i {
+            me_index = self.view.len();
+        }
+        let (state, terminated, frozen) = match &self.snapshot {
+            Some(s) => (s.state[j], s.terminated[j], s.frozen[j]),
+            None => {
+                let r = &self.robots;
+                (r.state[j], r.terminated[j], r.frozen[j])
+            }
+        };
+        self.view
+            .push(robot_id_u32(j), p, state, terminated, frozen);
     }
     me_index
 }
@@ -667,7 +537,7 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
 }
 ```
 
-`schedule_activation` — [`crates/lcm-core/src/sim.rs:840`](../crates/lcm-core/src/sim.rs#L840)
+`schedule_activation` — [`crates/lcm-core/src/sim.rs:1218`](../crates/lcm-core/src/sim.rs#L1218)
 
 ```rust
 /// `Scheduler.generate_event`: the random delay is drawn even when a
@@ -677,6 +547,13 @@ fn schedule_activation(&mut self, previous: f64, i: usize) {
     if self.turns.is_some() {
         self.next_turn(previous);
         return;
+    }
+    if self.rounds.is_some() {
+        self.member_done(previous, i);
+        return;
+    }
+    if self.bounded.is_some() {
+        self.cycle_done(previous, i);
     }
     let delay = self.rng.exponential(1.0 / self.lambda);
     let time = previous + delay.max(1e-9);
@@ -695,7 +572,7 @@ fn schedule_activation(&mut self, previous: f64, i: usize) {
 }
 ```
 
-`begin_move` — [`crates/lcm-core/src/sim.rs:751`](../crates/lcm-core/src/sim.rs#L751)
+`begin_move` — [`crates/lcm-core/src/sim.rs:1129`](../crates/lcm-core/src/sim.rs#L1129)
 
 ```rust
 /// `Robot.move` and the WAIT scheduling that follows it.
@@ -735,7 +612,7 @@ fn begin_move(&mut self, i: usize, t: f64) -> StepOutcome {
 }
 ```
 
-`wait` — [`crates/lcm-core/src/sim.rs:816`](../crates/lcm-core/src/sim.rs#L816)
+`wait` — [`crates/lcm-core/src/sim.rs:1194`](../crates/lcm-core/src/sim.rs#L1194)
 
 ```rust
 /// `Robot.wait`.
@@ -921,7 +798,7 @@ requestFrame() {
 }
 ```
 
-`slice` — [`web/worker.js:179`](../web/worker.js#L179)
+`slice` — [`web/worker.js:180`](../web/worker.js#L180)
 
 ```js
 function slice(gen) {
@@ -951,7 +828,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:97`](../crates/lcm-wasm/src/lib.rs#L97)
+`advance` — [`crates/lcm-wasm/src/lib.rs:102`](../crates/lcm-wasm/src/lib.rs#L102)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -967,7 +844,7 @@ pub fn advance(&mut self, max_events: u32, until_time: f64) -> Stop {
 }
 ```
 
-`postFrame` — [`web/worker.js:213`](../web/worker.js#L213)
+`postFrame` — [`web/worker.js:214`](../web/worker.js#L214)
 
 ```js
 function postFrame(extra = {}) {
@@ -1006,7 +883,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:337`](../crates/lcm-wasm/src/lib.rs#L337)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:425`](../crates/lcm-wasm/src/lib.rs#L425)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1439,7 +1316,7 @@ flowchart TD
 | Stop it on the way | The adversary picks the stopping point, never before δ along the way: just after δ, anywhere between δ and the destination at random, a set fraction of the way, or the fraction this turn of the schedule names. |
 | Arrive, and the turn ends | The robot stands at its destination, or at the point where it was stopped. It does not schedule its own next Look: control goes back to next_turn(). |
 
-`next_turn` — [`crates/lcm-core/src/sim.rs:864`](../crates/lcm-core/src/sim.rs#L864)
+`next_turn` — [`crates/lcm-core/src/sim.rs:1249`](../crates/lcm-core/src/sim.rs#L1249)
 
 ```rust
 /// Sequential scheduler: queues the Look of the next robot to take a turn:
@@ -1462,7 +1339,7 @@ fn next_turn(&mut self, previous: f64) {
             }
             if s.unseen == 0 {
                 turns.epochs_completed += 1;
-                if !turns.progress && self.fault_free {
+                if !turns.progress && self.stall_check {
                     self.stalled = true;
                     return;
                 }
@@ -1475,6 +1352,10 @@ fn next_turn(&mut self, previous: f64) {
         let mut skipped = 0;
         let picked = loop {
             let k = s.cursor;
+            if k >= len && s.end == ScheduleEnd::Await {
+                self.awaiting = true;
+                break None;
+            }
             s.cursor += 1;
             let (robot, stop) = if k < len {
                 (s.list[k].robot(), s.list[k].stop())
@@ -1512,7 +1393,7 @@ fn next_turn(&mut self, previous: f64) {
             }
             if !turns.epoch.is_empty() {
                 turns.epochs_completed += 1;
-                if !turns.progress && self.fault_free {
+                if !turns.progress && self.stall_check {
                     self.stalled = true;
                     return;
                 }
@@ -1543,7 +1424,7 @@ fn next_turn(&mut self, previous: f64) {
 }
 ```
 
-`limited_target` — [`crates/lcm-core/src/sim.rs:787`](../crates/lcm-core/src/sim.rs#L787)
+`limited_target` — [`crates/lcm-core/src/sim.rs:1165`](../crates/lcm-core/src/sim.rs#L1165)
 
 ```rust
 /// Non-rigid movement with a `delta`: where the adversary stops robot `i`
