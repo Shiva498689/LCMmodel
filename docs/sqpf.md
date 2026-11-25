@@ -126,3 +126,17 @@ On the page: *Algorithm → Sequential Pattern Formation*, then pick a shape (or
 in the list next to it. The scheduler, rigid movement, visibility, faults, the robots' axes (Global:
 the algorithm gives each robot its own compass) and the number of robots (one per pattern point) are
 fixed while it is chosen.
+
+## 6. Speed
+
+The point tests a robot makes again and again ("is a robot within tolerance of this pattern point?")
+use `PointIndex`, the points sorted by x as indices into the snapshot (no copy), so each test is a
+binary search instead of a scan of all n points. Procedure Last stops at the second empty pattern
+point (its special case allows one), the Look merges robots on one point with an ordered tree, and
+the page's "formed?" test skips robot pairs whose distance cannot match the pattern's scale. Each of
+these gives the same answer as the scan it replaces, so every decision is unchanged: recorded traces
+of 13 runs (SqPF and SqPF′, n = k and n > k, stacked starts) are identical byte for byte.
+
+At n = 500 a robot's Compute went from 15–21 ms to about 1 ms, and the page's per-frame "formed?" test
+from about 6 s to under 1 ms. The number of turns is the algorithm's own (Theorem 2 bounds it by
+2(n+1)⌈ρ/δ⌉ + 2 epochs of n turns; about 8.5·n epochs in practice), so large patterns still take long.

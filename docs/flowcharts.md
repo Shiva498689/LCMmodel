@@ -1943,7 +1943,7 @@ flowchart TD
 | Γ has one too? | The pattern points must not create a smaller angle than θ₁. |
 | Occupy | The walker (the highest priority free robot with a free path) goes, via O, to the highest priority empty pattern point. |
 
-`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1231`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1231)
+`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1307`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1307)
 
 ```rust
 /// Look in the robot's own frame, Compute with [`destination`], and hand
@@ -1967,7 +1967,7 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
 }
 ```
 
-`snapshot` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:334`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L334)
+`snapshot` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:378`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L378)
 
 ```rust
 /// The Look phase (Section 2.1): the set Q of distinct points occupied by
@@ -1980,9 +1980,18 @@ pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
     let local: Vec<Point> = world.iter().map(|&p| frame.to_local(p)).collect();
     let span = local.iter().map(|&p| norm(p)).fold(0.0, f64::max);
     let tol = REL_TOL * span;
-    let mut q: Vec<Point> = vec![Point::new(0.0, 0.0)];
-    for p in local {
-        if q.iter().all(|&x| dist(x, p) > tol) {
+    // The first robot seen on a point stands for it, as in a scan of the points
+    // kept so far; the tree keeps them by x, so each look is O(log n), not O(n).
+    let mut q: Vec<Point> = Vec::with_capacity(local.len() + 1);
+    let mut kept: BTreeMap<(u64, u32), ()> = BTreeMap::new();
+    #[allow(clippy::cast_possible_truncation)]
+    for p in core::iter::once(Point::new(0.0, 0.0)).chain(local) {
+        let (lo, hi) = (x_key(p.x - 2.0 * tol), x_key(p.x + 2.0 * tol));
+        let taken = kept
+            .range((lo, 0)..=(hi, u32::MAX))
+            .any(|(&(_, i), ())| dist(q[i as usize], p) <= tol);
+        if !taken {
+            kept.insert((x_key(p.x), q.len() as u32), ());
             q.push(p);
         }
     }
@@ -1995,7 +2004,7 @@ pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
 }
 ```
 
-`destination` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1099`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1099)
+`destination` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1174`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1174)
 
 ```rust
 /// The robot's Compute phase: SqPF (|P̂| ≥ 5) or SqPF′ (|P̂| < 5) on the
@@ -2014,13 +2023,7 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
         return (separate(q_pts, q), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
     }
     let (o, rho) = sec(q_pts);
-    let sc = Scene {
-        q,
-        pts: q_pts,
-        o,
-        rho,
-        tol: REL_TOL * rho,
-    };
+    let sc = Scene::new(q, q_pts, o, rho, REL_TOL * rho);
     if pat.len() >= 5 {
         sqpf(pat, &sc)
     } else {
@@ -2029,20 +2032,14 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
 }
 ```
 
-`separate` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:696`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L696)
+`separate` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:781`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L781)
 
 ```rust
 /// Procedure 2, Separate: a point at one unit along the robot's own x-axis,
 /// or the midpoint towards the closest robot on that segment.
 fn separate(pts: &[Point], q: Point) -> Point {
     let span = pts.iter().map(|&p| dist(p, q)).fold(0.0, f64::max);
-    let sc = Scene {
-        q,
-        pts,
-        o: q,
-        rho: span.max(1.0),
-        tol: REL_TOL * span.max(1.0),
-    };
+    let sc = Scene::new(q, pts, q, span.max(1.0), REL_TOL * span.max(1.0));
     let q1 = Point::new(q.x + 1.0, q.y); // l. 1: q′, one unit along the x-axis
     let on = sc.robots_on(q, q1);
     let on: Vec<Point> = on
@@ -2059,7 +2056,7 @@ fn separate(pts: &[Point], q: Point) -> Point {
 }
 ```
 
-`sqpf_prime` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:972`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L972)
+`sqpf_prime` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1047`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1047)
 
 ```rust
 /// Algorithm 7, SqPF′ (1 < |P̂| < 5), after the |Q| < k test.
@@ -2190,7 +2187,7 @@ fn sqpf_prime(pat: &Pattern, sc: &Scene) -> (Point, Step) {
 }
 ```
 
-`last` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:722`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L722)
+`last` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:801`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L801)
 
 ```rust
 /// Procedure 3, Last.
@@ -2223,20 +2220,21 @@ fn last(pat: &Pattern, sc: &Scene) -> Option<(Point, Step)> {
     // moves toward p̂ₖ"), Fig. 1 (Special case? → Last → END) and the proof of
     // Lemma 2 keep the others still. See docs/sqpf.md, choice 3.
     for (placed, a, dir) in &taus {
+        // P̂ \ Q may hold p̂ₖ at most: stop at the second empty pattern point
+        // (the ranking is needed only when at most one is empty).
+        let mut empty = placed.iter().copied().filter(|&p| !sc.occupied(p));
+        let missing = empty.next();
+        if empty.next().is_some() {
+            continue;
+        }
         let Some(rank) = sc.ranking(placed, *a, *dir) else {
             continue;
         };
         let pk = placed[rank[rank.len() - 1]]; // l. 3: lowest priority pattern point
-        let missing: Vec<Point> = placed.iter().copied().filter(|&p| !sc.occupied(p)).collect();
-        if !(missing.is_empty() || (missing.len() == 1 && sc.at(missing[0], pk))) {
+        if missing.is_some_and(|m| !sc.at(m, pk)) {
             continue;
         }
-        let extra: Vec<Point> = sc
-            .pts
-            .iter()
-            .copied()
-            .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
-            .collect();
+        let extra = sc.off(&PointIndex::new(placed));
         let on_seg: Vec<Point> = sc
             .pts
             .iter()
@@ -2256,7 +2254,7 @@ fn last(pat: &Pattern, sc: &Scene) -> Option<(Point, Step)> {
 }
 ```
 
-`overlap` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:784`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L784)
+`overlap` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:864`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L864)
 
 ```rust
 /// Procedure 4, Overlap.
@@ -2272,7 +2270,7 @@ fn overlap(pat: &Pattern, sc: &Scene) -> Option<Gamma> {
 }
 ```
 
-`leader` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:796`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L796)
+`leader` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:876`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L876)
 
 ```rust
 /// Procedure 5, Leader.
@@ -2318,7 +2316,7 @@ fn leader(sc: &Scene, gamma: Option<&Gamma>) -> (Point, Step) {
 }
 ```
 
-`occupy` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:838`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L838)
+`occupy` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:918`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L918)
 
 ```rust
 /// Procedure 6, Occupy (with the walker of Section 4.1.7).
@@ -2336,16 +2334,10 @@ fn occupy(sc: &Scene, g: &Gamma) -> (Point, Step) {
         .find(|&p| !sc.occupied(p))
         .unwrap_or(pk);
     // Free robots: not located at a pattern point.
-    let free: Vec<Point> = sc
-        .pts
-        .iter()
-        .copied()
-        .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
-        .collect();
+    let free = sc.off(&PointIndex::new(placed));
     // Priority (Section 4.1.7): radiangular distance from p₁ = A.
-    let higher = |x: Point, y: Point| -> Ordering {
-        let (tx, dx) = sc.radiangular(a, x, dir);
-        let (ty, dy) = sc.radiangular(a, y, dir);
+    // Each robot's radiangular distance is computed once, not in every comparison.
+    let higher = |(tx, dx): (f64, f64), (ty, dy): (f64, f64)| -> Ordering {
         match cmp_tol(tx, ty, ANG_TOL) {
             Ordering::Equal if tx <= ANG_TOL => cmp_tol(dx, dy, sc.tol),
             Ordering::Equal => cmp_tol(dy, dx, sc.tol),
@@ -2353,11 +2345,12 @@ fn occupy(sc: &Scene, g: &Gamma) -> (Point, Step) {
         }
     };
     // l. 6: the highest priority free robot not defining SEC(Q(t)).
-    let Some(u) = free
+    let Some((u, _)) = free
         .iter()
         .copied()
         .filter(|&x| !sc.responsible(x))
-        .min_by(|x, y| higher(*x, *y))
+        .map(|x| (x, sc.radiangular(a, x, dir)))
+        .min_by(|x, y| higher(x.1, y.1))
     else {
         return (sc.q, Step::OccupyWait);
     };

@@ -26,6 +26,7 @@
 
 use core::cmp::Ordering;
 use core::f64::consts::TAU;
+use std::collections::BTreeMap;
 
 use lcm_core::geom::dist;
 use lcm_core::{
@@ -329,6 +330,49 @@ fn lex(a: &[(f64, f64, f64)], b: &[(f64, f64, f64)]) -> Ordering {
     Ordering::Equal
 }
 
+// ── finding points fast ───────────────────────────────────────────────────────
+
+/// A set of points sorted by x, as indices into the caller's slice (nothing is
+/// copied), answering "is a point within `tol` of p?" in O(log n) instead of
+/// a scan of every point. `dist(a, b) ≤ tol` implies |a.x − b.x| ≤ tol, so
+/// only the points in the x-window [p.x − 2·tol, p.x + 2·tol] can match (the
+/// factor 2 absorbs rounding); each of them is then tested with the same
+/// `dist(·, ·) ≤ tol` as a full scan, so the answer is exactly the scan's.
+struct PointIndex<'a> {
+    pts: &'a [Point],
+    by_x: Vec<u32>,
+}
+
+impl<'a> PointIndex<'a> {
+    #[allow(clippy::cast_possible_truncation)]
+    fn new(pts: &'a [Point]) -> Self {
+        let mut by_x: Vec<u32> = (0..pts.len() as u32).collect();
+        by_x.sort_unstable_by(|&a, &b| pts[a as usize].x.total_cmp(&pts[b as usize].x));
+        Self { pts, by_x }
+    }
+
+    /// Some point of the set within `tol` of `p` (`dist ≤ tol`).
+    fn any_within(&self, p: Point, tol: f64) -> bool {
+        let (lo, hi) = (p.x - 2.0 * tol, p.x + 2.0 * tol);
+        let start = self.by_x.partition_point(|&i| self.pts[i as usize].x < lo);
+        self.by_x[start..]
+            .iter()
+            .map(|&i| self.pts[i as usize])
+            .take_while(|x| x.x <= hi)
+            .any(|x| dist(x, p) <= tol)
+    }
+}
+
+/// Ordered key of an x-coordinate for [`snapshot`]'s tree (−0 and +0 are one key).
+fn x_key(x: f64) -> u64 {
+    let b = (x + 0.0).to_bits();
+    if b >> 63 == 1 {
+        !b
+    } else {
+        b | (1 << 63)
+    }
+}
+
 // ── what one robot sees ───────────────────────────────────────────────────────
 
 /// The Look phase (Section 2.1): the set Q of distinct points occupied by
@@ -341,9 +385,18 @@ pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
     let local: Vec<Point> = world.iter().map(|&p| frame.to_local(p)).collect();
     let span = local.iter().map(|&p| norm(p)).fold(0.0, f64::max);
     let tol = REL_TOL * span;
-    let mut q: Vec<Point> = vec![Point::new(0.0, 0.0)];
-    for p in local {
-        if q.iter().all(|&x| dist(x, p) > tol) {
+    // The first robot seen on a point stands for it, as in a scan of the points
+    // kept so far; the tree keeps them by x, so each look is O(log n), not O(n).
+    let mut q: Vec<Point> = Vec::with_capacity(local.len() + 1);
+    let mut kept: BTreeMap<(u64, u32), ()> = BTreeMap::new();
+    #[allow(clippy::cast_possible_truncation)]
+    for p in core::iter::once(Point::new(0.0, 0.0)).chain(local) {
+        let (lo, hi) = (x_key(p.x - 2.0 * tol), x_key(p.x + 2.0 * tol));
+        let taken = kept
+            .range((lo, 0)..=(hi, u32::MAX))
+            .any(|(&(_, i), ())| dist(q[i as usize], p) <= tol);
+        if !taken {
+            kept.insert((x_key(p.x), q.len() as u32), ());
             q.push(p);
         }
     }
@@ -451,9 +504,22 @@ struct Scene<'a> {
     o: Point,
     rho: f64,
     tol: f64,
+    /// Q sorted by x, for [`Scene::occupied`].
+    index: PointIndex<'a>,
 }
 
-impl Scene<'_> {
+impl<'a> Scene<'a> {
+    fn new(q: Point, pts: &'a [Point], o: Point, rho: f64, tol: f64) -> Self {
+        Self {
+            q,
+            pts,
+            o,
+            rho,
+            tol,
+            index: PointIndex::new(pts),
+        }
+    }
+
     fn at(&self, a: Point, b: Point) -> bool {
         dist(a, b) <= self.tol
     }
@@ -467,7 +533,16 @@ impl Scene<'_> {
     }
 
     fn occupied(&self, p: Point) -> bool {
-        self.pts.iter().any(|&x| self.at(x, p))
+        self.index.any_within(p, self.tol)
+    }
+
+    /// The robot positions not located at a point of `placed` (`placed` indexed).
+    fn off(&self, placed: &PointIndex) -> Vec<Point> {
+        self.pts
+            .iter()
+            .copied()
+            .filter(|&x| !placed.any_within(x, self.tol))
+            .collect()
     }
 
     /// Two points on the same radius of SEC (footnote 2); O is on every radius.
@@ -633,7 +708,10 @@ impl Scene<'_> {
     /// pₖ, with "clockwise" = `dir`.
     fn ranking(&self, placed: &[Point], a: Point, dir: f64) -> Option<Vec<usize>> {
         let o = self.o;
-        let r = |i: usize| dist(placed[i], o);
+        // Each point's distance from O and clockwise angle from A, computed once
+        // (not inside the sort's comparisons); the orders are the same.
+        let radius: Vec<f64> = placed.iter().map(|&p| dist(p, o)).collect();
+        let r = |i: usize| radius[i];
         let mut idx: Vec<usize> = (0..placed.len()).collect();
         idx.sort_by(|&x, &y| r(y).partial_cmp(&r(x)).unwrap_or(Ordering::Equal));
         // Cir₁, Cir₂, …, Cir_σ: concentric circles in decreasing order of radius.
@@ -645,13 +723,17 @@ impl Scene<'_> {
             }
         }
         let a_ang = angle_of(sub(a, o));
-        let cw = |i: usize| {
-            if self.at_center(placed[i]) {
-                0.0
-            } else {
-                sweep(a_ang, angle_of(sub(placed[i], o)), dir)
-            }
-        };
+        let cw_of: Vec<f64> = placed
+            .iter()
+            .map(|&p| {
+                if self.at_center(p) {
+                    0.0
+                } else {
+                    sweep(a_ang, angle_of(sub(p, o)), dir)
+                }
+            })
+            .collect();
+        let cw = |i: usize| cw_of[i];
         let by_cw = |x: &usize, y: &usize| cw(*x).partial_cmp(&cw(*y)).unwrap_or(Ordering::Equal);
 
         let c1 = &circles[0];
@@ -687,7 +769,10 @@ impl Scene<'_> {
     fn same_set(&self, placed: &[Point]) -> bool {
         placed.len() == self.pts.len()
             && placed.iter().all(|&p| self.occupied(p))
-            && self.pts.iter().all(|&x| placed.iter().any(|&p| self.at(x, p)))
+            && {
+                let index = PointIndex::new(placed);
+                self.pts.iter().all(|&x| index.any_within(x, self.tol))
+            }
     }
 }
 
@@ -697,13 +782,7 @@ impl Scene<'_> {
 /// or the midpoint towards the closest robot on that segment.
 fn separate(pts: &[Point], q: Point) -> Point {
     let span = pts.iter().map(|&p| dist(p, q)).fold(0.0, f64::max);
-    let sc = Scene {
-        q,
-        pts,
-        o: q,
-        rho: span.max(1.0),
-        tol: REL_TOL * span.max(1.0),
-    };
+    let sc = Scene::new(q, pts, q, span.max(1.0), REL_TOL * span.max(1.0));
     let q1 = Point::new(q.x + 1.0, q.y); // l. 1: q′, one unit along the x-axis
     let on = sc.robots_on(q, q1);
     let on: Vec<Point> = on
@@ -749,20 +828,21 @@ fn last(pat: &Pattern, sc: &Scene) -> Option<(Point, Step)> {
     // moves toward p̂ₖ"), Fig. 1 (Special case? → Last → END) and the proof of
     // Lemma 2 keep the others still. See docs/sqpf.md, choice 3.
     for (placed, a, dir) in &taus {
+        // P̂ \ Q may hold p̂ₖ at most: stop at the second empty pattern point
+        // (the ranking is needed only when at most one is empty).
+        let mut empty = placed.iter().copied().filter(|&p| !sc.occupied(p));
+        let missing = empty.next();
+        if empty.next().is_some() {
+            continue;
+        }
         let Some(rank) = sc.ranking(placed, *a, *dir) else {
             continue;
         };
         let pk = placed[rank[rank.len() - 1]]; // l. 3: lowest priority pattern point
-        let missing: Vec<Point> = placed.iter().copied().filter(|&p| !sc.occupied(p)).collect();
-        if !(missing.is_empty() || (missing.len() == 1 && sc.at(missing[0], pk))) {
+        if missing.is_some_and(|m| !sc.at(m, pk)) {
             continue;
         }
-        let extra: Vec<Point> = sc
-            .pts
-            .iter()
-            .copied()
-            .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
-            .collect();
+        let extra = sc.off(&PointIndex::new(placed));
         let on_seg: Vec<Point> = sc
             .pts
             .iter()
@@ -850,16 +930,10 @@ fn occupy(sc: &Scene, g: &Gamma) -> (Point, Step) {
         .find(|&p| !sc.occupied(p))
         .unwrap_or(pk);
     // Free robots: not located at a pattern point.
-    let free: Vec<Point> = sc
-        .pts
-        .iter()
-        .copied()
-        .filter(|&x| !placed.iter().any(|&p| sc.at(x, p)))
-        .collect();
+    let free = sc.off(&PointIndex::new(placed));
     // Priority (Section 4.1.7): radiangular distance from p₁ = A.
-    let higher = |x: Point, y: Point| -> Ordering {
-        let (tx, dx) = sc.radiangular(a, x, dir);
-        let (ty, dy) = sc.radiangular(a, y, dir);
+    // Each robot's radiangular distance is computed once, not in every comparison.
+    let higher = |(tx, dx): (f64, f64), (ty, dy): (f64, f64)| -> Ordering {
         match cmp_tol(tx, ty, ANG_TOL) {
             Ordering::Equal if tx <= ANG_TOL => cmp_tol(dx, dy, sc.tol),
             Ordering::Equal => cmp_tol(dy, dx, sc.tol),
@@ -867,11 +941,12 @@ fn occupy(sc: &Scene, g: &Gamma) -> (Point, Step) {
         }
     };
     // l. 6: the highest priority free robot not defining SEC(Q(t)).
-    let Some(u) = free
+    let Some((u, _)) = free
         .iter()
         .copied()
         .filter(|&x| !sc.responsible(x))
-        .min_by(|x, y| higher(*x, *y))
+        .map(|x| (x, sc.radiangular(a, x, dir)))
+        .min_by(|x, y| higher(x.1, y.1))
     else {
         return (sc.q, Step::OccupyWait);
     };
@@ -1112,13 +1187,7 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
         return (separate(q_pts, q), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
     }
     let (o, rho) = sec(q_pts);
-    let sc = Scene {
-        q,
-        pts: q_pts,
-        o,
-        rho,
-        tol: REL_TOL * rho,
-    };
+    let sc = Scene::new(q, q_pts, o, rho, REL_TOL * rho);
     if pat.len() >= 5 {
         sqpf(pat, &sc)
     } else {
@@ -1147,16 +1216,23 @@ pub fn formed_placement(pat: &Pattern, world: &[Point]) -> Option<Vec<Point>> {
         return None;
     }
     let (o, rho) = sec(&q_pts);
-    let sc = Scene {
-        q: q_pts[0],
-        pts: &q_pts,
-        o,
-        rho,
-        tol: 1e-7 * rho,
-    };
+    let sc = Scene::new(q_pts[0], &q_pts, o, rho, 1e-7 * rho);
+    // A pair (x, y) can carry p̂₀p̂₁ only at the scale of SEC(Q): when every
+    // point of the placement is within tol of Q, the radii of the two SECs
+    // differ by at most tol, so | |xy| − ρ·|p̂₀p̂₁| | ≤ tol·|p̂₀p̂₁| ≤ 2·tol
+    // (P̂ has SEC radius 1). Pairs farther off are skipped without building a
+    // placement; the first pair that matches is the same as before.
+    let chord = rho * dist(pat.points[0], pat.points[1]);
+    let slack = 10.0 * sc.tol;
+    // The same test on squared lengths, a little wider, first: no square root
+    // for the pairs that are clearly off.
+    let near2 = (chord - 2.0 * slack).max(0.0).powi(2);
+    let far2 = (chord + 2.0 * slack).powi(2);
     for &x in sc.pts {
         for &y in sc.pts {
-            if sc.at(x, y) {
+            let (dx, dy) = (x.x - y.x, x.y - y.y);
+            let d2 = dx * dx + dy * dy;
+            if d2 < near2 || d2 > far2 || sc.at(x, y) || (dist(x, y) - chord).abs() > slack {
                 continue;
             }
             for mirror in [false, true] {
@@ -1409,3 +1485,4 @@ mod tests {
         assert_eq!(separate(&[o, p(0.5, 0.0), p(5.0, 5.0)], o), p(0.25, 0.0));
     }
 }
+
