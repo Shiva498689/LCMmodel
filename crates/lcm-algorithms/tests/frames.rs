@@ -34,6 +34,11 @@ impl Algorithm for Recorder {
         "Recorder"
     }
 
+    /// Standing still is the point: keep the stall check from ending the run.
+    fn randomized(&self) -> bool {
+        true
+    }
+
     fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
         self.0.borrow_mut().push(Seen {
             me: look.me,
@@ -74,11 +79,9 @@ fn recorded(frames: Frames, scheduler: SchedulerKind) -> Vec<Seen> {
         until_time: f64::INFINITY,
     });
     let looks = looks.borrow().clone();
-    // Sequential: one epoch, then the stall check ends the run (nobody moves).
-    // Async has no stall check: every robot looks many times.
     assert!(
-        looks.len() >= 4,
-        "every robot looked: {} looks, {stop:?}",
+        looks.len() >= 8,
+        "every robot looked at least twice: {} looks, {stop:?}",
         looks.len()
     );
     looks
@@ -110,7 +113,11 @@ fn a_global_look_is_the_original_one() {
 #[test]
 fn a_private_frame_leaks_no_global_information() {
     for frames in [Frames::Rotated, Frames::Disoriented, Frames::Compass] {
-        for scheduler in [SchedulerKind::Sequential, SchedulerKind::Async] {
+        for scheduler in [
+            SchedulerKind::Sequential,
+            SchedulerKind::Async,
+            SchedulerKind::Ssync,
+        ] {
             let looks = recorded(frames, scheduler);
             for seen in &looks {
                 let tag = format!("{frames:?} {scheduler:?} robot {}", seen.me);
@@ -135,9 +142,7 @@ fn a_private_frame_leaks_no_global_information() {
             // their frames: a robot's view of the others must change.
             for me in 0..4 {
                 let mine: Vec<&Seen> = looks.iter().filter(|s| s.me == me).collect();
-                if scheduler == SchedulerKind::Async {
-                    assert!(mine.len() >= 2, "robot {me} looked again");
-                }
+                assert!(mine.len() >= 2);
                 let other = usize::from(me == 0);
                 assert!(
                     mine.windows(2)

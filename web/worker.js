@@ -47,7 +47,8 @@ const version = new URL(self.location.href).searchParams.get("v");
 const suffix = version ? `?v=${encodeURIComponent(version)}` : "";
 let wasm = null;
 
-const STOP = ["budget", "until-time", "ended", "max-events", "max-time", "stalled", "max-turns"];
+// Indexed by the core's stop code (lcm-wasm `Stop`).
+const STOP = ["budget", "until-time", "ended", "max-events", "max-time", "stalled", "max-turns", "moved", "max-rounds", "awaiting"];
 const SLICE_MS = 6;
 const IDLE_MS = 4;
 const ready = (async () => {

@@ -74,20 +74,28 @@ JSON form (serde, camelCase is **not** used; names match `main.js params()`):
 | `max_events`, `max_time` | u64 / f64 or null | safety limits, same semantics as the original simulator (§6) |
 | `open_world` | bool | `true`: no world box, algorithms get no bounds. Default `false` (the original) |
 | `start` | object or null | a generated start (§4.3); null keeps the original start |
-| `scheduler` | string | `async` (the original, default) or `sequential`: one robot at a time does a whole Look-Compute-Move while the rest stay still |
+| `scheduler` | string | `async` (the original, default); `sequential`: one robot at a time does a whole Look-Compute-Move while the rest stay still; `ssync`: rounds in which a non-empty subset of the robots looks at the same instant, computes and moves, the round ending once all of them have stopped; `fsync`: rounds in which every live robot is active; `kasync`: as `async`, but while one robot is in a cycle (its Look until the end of its move) no other robot starts more than `k_async` Looks (Kirkpatrick et al. 2024); a Look that would is put off until that cycle ends |
+| `ssync_probability` | f64 | `ssync`: chance in (0, 1] that a live robot is active in a round (default 0.5). A round with nobody drawn activates one robot at random, so rounds are never empty |
+| `ssync_fairness` | u32 | `ssync`: a robot left out of this many rounds in a row (≥ 1, default 4) is activated in the next one |
+| `rounds` | list or null | `ssync` only: the robots of each round, in order (`[[0, 1], [2]]`), instead of random draws. Every round names at least one existing robot |
+| `max_rounds` | u64 or null | `ssync`/`fsync` only: stop after this many rounds (`advance` returns `MaxRounds`). null: no limit |
+| `k_async` | u32 | `kasync`: the bound k, at least 1 (default 1) |
+| `multiplicity` | string | what an algorithm reading `Look::occupied` (§7) can tell about points several robots share: `none` (only the set of occupied points), `weak` (default: one robot or more than one), `strong` (the number of robots), `local` (whether its own point holds more than one robot, nothing about other points; Kamei et al. 2011). The ported algorithms read the raw view and ignore it |
+| `frames` | string | the coordinate system each robot computes in (§7.1): `global` (default, the original), `rotated`, `disoriented`, `compass` |
+| `compass_error` | f64 | `frames` `compass`: the largest deviation of a robot's north from the global north, in degrees, 0 ..= 180 (default 0) |
+| `compass_static` | bool | `frames` `compass`: true (default) draws one deviation per robot for the whole run; false draws a new one at every Look |
+| `obstructed_visibility` | bool | a robot does not see robots hidden behind another robot (default false) |
+| `robot_radius` | f64 | ≥ 0: robots are discs of this radius when they block a view; 0 (default): points, which block only when in line to within ε |
 | `activation_order` | string | sequential only: `round_robin` (0, 1, …, n-1, default) or `random` (a fresh shuffle each epoch, from the seed). Every epoch gives each robot that is neither crashed nor terminated exactly one turn |
 | `delta` | f64 or null | non-rigid movement (`rigid_movement` false): a robot always covers at least `delta` along its way, or reaches its destination if that is nearer. null (default): a non-rigid robot still reaches its destination, as in the Python original |
 | `stop_policy` | string | where a robot is stopped once its destination is farther than `delta`: `delta` (exactly `delta`), `random` (default: uniform between `delta` and the destination, from the run's random stream), `fraction` (`stop_fraction` of the way, never less than `delta`) |
 | `stop_fraction` | f64 | in (0, 1], default 0.5; used by `stop_policy` `fraction` |
 | `schedule` | list or null | sequential only: the turns in order, instead of `activation_order`. Each turn is a robot index, or `{"robot": i, "stop": f}` where `f` in (0, 1] is the fraction of the way the adversary lets that robot travel (needs non-rigid movement and `delta`). Turns of crashed or terminated robots are skipped. An epoch ends once every robot live at its start has had a turn |
-| `schedule_end` | string | sequential only: what follows the list: `round_robin` (default; carries on 0, 1, 2, …) or `repeat` (plays it again; the list must name every robot) |
+| `schedule_end` | string | what follows the end of `schedule` (sequential) or `rounds` (ssync): `round_robin` (default) hands the run back to the scheduler's own fair choice, which is turns 0, 1, 2, … for sequential and random rounds for ssync (the name is the sequential meaning); `repeat` plays the list again (it must name every robot); `await` waits for the next turn or round to be added while the run goes on (`push_turn`, `push_round`; `advance` returns `AwaitingSchedule`), and needs a `schedule` or `rounds` list, which may start empty. `await` is refused with any other scheduler, where there is no list to wait on |
 | `max_turns` | u64 or null | sequential only: stop after this many turns (one per Look); `advance` then returns `MaxTurns`. The last turn's move still finishes. null: no limit |
 | `multiplicities` | u32 | start with this many multiplicity points (robots standing on one spot), made from the start positions whatever their source: that many robots, chosen at random from `random_seed` (a stream of its own), become anchors and other robots are moved onto them. 0 (default): none |
 | `multiplicity_size` | u32 | robots on each starting multiplicity, at least 2; 0 (default) picks a size: a third of the robots for one multiplicity, up to 4 each for several. `multiplicities` × `multiplicity_size` must not exceed `num_of_robots` |
 | `turn_gap` | string | sequential only: `random` (exponential with rate `lambda_rate`, default) or `none` (the next Look at the instant the last turn ends) |
-| `frames` | string | the coordinate system each robot computes in (§7.1): `global` (default, the original), `rotated`, `disoriented`, `compass` |
-| `compass_error` | f64 | `frames` `compass`: the largest deviation of a robot's north from the global north, in degrees, 0 ..= 180 (default 0) |
-| `compass_static` | bool | `frames` `compass`: true (default) draws one deviation per robot for the whole run; false draws a new one at every Look |
 
 Invalid values are a `ConfigError`, never a silent default.
 
@@ -220,8 +228,10 @@ be the same and the run could never end. This is checked only without faults
 all. The run is not `ended`; `sim.stalled()` is true.
 
 Likewise `MaxTurns` ends a sequential run that has taken `max_turns` turns
-(`sim.turn_limit_reached()`); it says nothing about the algorithm, only that the
-budget ran out.
+(`sim.turn_limit_reached()`), and `MaxRounds` an SSYNC or FSYNC run that has
+played `max_rounds` rounds; they say nothing about the algorithm, only that the
+budget ran out. `AwaitingSchedule` is not an end: a `schedule_end` `await` list
+has run out, and the run carries on once `push_turn` or `push_round` adds more.
 
 ## 7. Algorithm interface
 
@@ -229,6 +239,10 @@ budget ran out.
 pub trait Algorithm: Send + Sync {
     fn key(&self) -> &'static str;
     fn compute(&self, look: &Look<'_>, rng: &mut Rng, scratch: &mut Scratch) -> Decision;
+    // Optional, with defaults:
+    fn randomized(&self) -> bool { false }        // true: no stall check (§6)
+    fn stops_when_alone(&self) -> bool { true }   // false: the algorithm decides termination
+    fn explain(&self, look: &Look<'_>, scratch: &mut Scratch) -> Option<String> { None }
 }
 
 pub struct Look<'a> {
@@ -236,8 +250,10 @@ pub struct Look<'a> {
     pub me_index: usize,     // my index inside `view`
     pub position: Point,     // my position ((0, 0) in a private frame, §7.1)
     pub view: &'a View,      // visible robots, ID order, including me
-    pub model: &'a Model,    // ε, precision, visibility, world bounds
+    pub model: &'a Model,    // ε, precision, visibility, world bounds, multiplicity model
 }
+// look.occupied(): the occupied points as `model.multiplicity` lets the robot
+// perceive them, and the one it stands on (crates/lcm-core/src/occupancy.rs).
 
 pub struct View {           // SoA, rebuilt in a reused buffer per look
     pub id: Vec<u32>,
@@ -298,7 +314,9 @@ Frames draw from their own generator, seeded with
 frames on leaves the scheduler's draws unchanged: a frame-invariant algorithm
 (one that uses only distances and angles between robots, like every ported
 one; `tests/local_frames.rs` checks each registered algorithm) runs the same
-events with frames on as off, up to rounding.
+events with frames on as off, up to rounding. `explain` and `preview_target`
+use a copy of that generator and restore a dynamic compass's deviation, so
+asking changes nothing about the run.
 
 Adding an algorithm = one file implementing `Algorithm` plus one registry
 line in `lcm-algorithms`. A registry entry builds the algorithm's `Plan` from the
