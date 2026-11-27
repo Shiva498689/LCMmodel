@@ -6,7 +6,7 @@
  * previews the new swarm; after the run has started it marks the settings
  * "Reset to apply" instead of throwing the run away. */
 import { renderIcons, icon } from "./icons.js";
-import { COLORS, LOD, Renderer, fmtDistance, ulpOf } from "./renderer.js";
+import { COLORS, LOD, PATTERN_COLORS, Renderer, fmtDistance, ulpOf } from "./renderer.js";
 import { SimClient } from "./client.js";
 import { Inspector } from "./inspector.js";
 import { Overview } from "./overview.js";
@@ -46,7 +46,117 @@ window.lcm = { renderer, client, settings, parseCoordinates, stats: {}, ready: n
   get state() { return state; } };
 
 /* ------------------------------------------------------------ run control */
-function config() { return readConfig(settings.values, $("algorithm").value, settings.customPoints); }
+function config() {
+  const c = readConfig(settings.values, $("algorithm").value, settings.customPoints);
+  const shape = settings.values.target_pattern; // the pattern-formation algorithms only; others ignore it
+  c.target_pattern = shape === "custom" ? "star" : shape;
+  if (PATTERN_ALGORITHMS.includes(c.algorithm)) {
+    // A predefined shape is its corners (SHAPE_POINTS). SqPF forms P̂ with any n ≥ |P̂| robots (Section 2.3;
+    // extra robots end on pattern points): the Robots slider cannot go below |P̂|.
+    c.target_points = shape === "custom" ? customPattern().points : shapePoints(shape);
+    c.num_of_robots = Math.max(c.num_of_robots, c.target_points.length);
+    if (Array.isArray(c.initial_positions) && c.initial_positions.length !== c.num_of_robots) c.initial_positions = null;
+  }
+  return c;
+}
+
+/** The algorithms that form a pattern chosen in the toolbar's pattern list. */
+const PATTERN_ALGORITHMS = ["PatternFormation", "SqPatternFormation"];
+/**
+ * Registered algorithms the page does not offer. PatternFormation (pattern formation with shared axes:
+ * world axes, robot IDs and robot counts) is not the paper's algorithm; it stays in the core for the CLI
+ * and the recorded-run tests (fixtures/pattern_formation_*.json).
+ */
+const HIDDEN_ALGORITHMS = ["PatternFormation"];
+
+const chosenAlgorithm = () => algorithms.find((a) => a.key === $("algorithm").value);
+/** How many points the chosen pattern has (0 while a custom pattern has none). */
+const patternSize = () => (settings.values.target_pattern === "custom"
+  ? customPattern().points.length : shapePoints(settings.values.target_pattern).length);
+
+/** The pattern list and editor show the `target_pattern` and `pattern_points` settings, and apply only to
+ * the pattern-formation algorithms (hidden otherwise). Also refreshes the chosen algorithm's model lock,
+ * whose lowest robot count is the pattern's size. */
+function syncPatternVisibility() {
+  const on = PATTERN_ALGORITHMS.includes($("algorithm").value);
+  const t = $("target-pattern");
+  if ([...t.options].some((o) => o.value === settings.values.target_pattern)) t.value = settings.values.target_pattern;
+  if ($("pattern_points").value !== settings.values.pattern_points) $("pattern_points").value = settings.values.pattern_points;
+  t.hidden = !on;
+  $("pattern_editor").hidden = !(on && settings.values.target_pattern === "custom");
+  if (!$("pattern_editor").hidden) showPatternProblem();
+  settings.lockModel(modelLockFor(chosenAlgorithm()));
+}
+
+/** A new pattern or algorithm is a new experiment: SqPF starts with one robot per pattern point (more can
+ * be added with the Robots slider). */
+function startWithOneRobotPerPoint() {
+  settings.lockModel(modelLockFor(chosenAlgorithm())); // the new pattern's lowest count, before setting it
+  if (PATTERN_ALGORITHMS.includes($("algorithm").value) && patternSize() > 0) settings.set("num_of_robots", patternSize(), false);
+}
+
+
+/**
+ * The settings an algorithm's paper fixes, for settings.lockModel: SqGathering and SqPF run only under
+ * the sequential scheduler, with unlimited visibility and no faults; SqPF also only with non-rigid
+ * moves of at least δ > 0 (arXiv:2412.10733, Section 2).
+ */
+function modelLockFor(a) {
+  if (!a?.sequential_only && !a?.non_rigid_only && !a?.disoriented_only) return null;
+  const values = { scheduler: "sequential", unlimited_visibility: true, num_of_faults: 0 };
+  const min = {};
+  if (a.non_rigid_only) { values.rigid_movement = false; min.delta = 1; }
+  // Disoriented robots: the core gives each robot a new private frame (direction, unit, handedness) at every Look.
+  if (a.disoriented_only) values.frames = "disoriented";
+  // Any n ≥ |P̂| robots (SqPF, Section 2.3).
+  if (PATTERN_ALGORITHMS.includes(a.key) && patternSize() > 0) min.num_of_robots = patternSize();
+  const extra = [a.non_rigid_only && "non-rigid moves with δ > 0", a.disoriented_only && "disoriented robots with a new frame at every look"]
+    .filter(Boolean).map((s) => `, ${s}`).join("");
+  return { values, min, reason: `Fixed by ${a.name}: its paper's robot model (sequential scheduler${extra}, unlimited visibility, no faults)` };
+}
+
+/**
+ * The predefined shapes as their corner points (one robot per corner; the outlines match
+ * pattern_formation.rs). Circle and heart have no corners, so they are 12 points around the curve.
+ */
+const SHAPE_POINTS = (() => {
+  const S = 100, ring = (k, phase, rad = () => 1) => Array.from({ length: k }, (_, i) => {
+    const a = phase + (2 * Math.PI * i) / k;
+    return [S * rad(i) * Math.cos(a), S * rad(i) * Math.sin(a)];
+  });
+  const heart = Array.from({ length: 12 }, (_, i) => {
+    const t = (2 * Math.PI * i) / 12, s = Math.sin(t);
+    return [S / 16 * 16 * s * s * s, S / 16 * (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t))];
+  });
+  const [l, w] = [S, 0.35 * S];
+  return {
+    star: ring(10, Math.PI / 2, (i) => (i % 2 ? 0.382 : 1)),
+    circle: ring(12, Math.PI / 2),
+    square: ring(4, Math.PI / 4),
+    triangle: ring(3, Math.PI / 2),
+    pentagon: ring(5, Math.PI / 2),
+    hexagon: ring(6, 0),
+    line: [[-S, 0], [S, 0]],
+    cross: [[w, w], [w, l], [-w, l], [-w, w], [-l, w], [-l, -w], [-w, -w], [-w, -l], [w, -l], [w, -w], [l, -w], [l, w]],
+    heart,
+  };
+})();
+const shapePoints = (shape) => SHAPE_POINTS[shape] ?? SHAPE_POINTS.star;
+
+/** The custom pattern (the `pattern_points` setting), as parsed points and any problem with them. */
+function customPattern() {
+  const { points, errors } = parseCoordinates(settings.values.pattern_points);
+  return { points, errors };
+}
+
+function showPatternProblem() {
+  const { points, errors } = customPattern();
+  const s = points.length === 1 ? "" : "s";
+  $("pattern_count").textContent = `${points.length} point${s}: at least ${points.length} robot${s}`;
+  $("pattern_error").hidden = !errors.length;
+  $("pattern_error").textContent = errors.length ? `Line ${errors[0].line}: ${errors[0].message}` : "";
+  return errors;
+}
 
 let fitPending = false; // fit the view to the new run's first frame
 
@@ -54,6 +164,13 @@ let fitPending = false; // fit the view to the new run's first frame
 function newRun({ quiet = false } = {}) {
   clearTimeout(restartTimer);
   restartTimer = 0;
+  if (PATTERN_ALGORITHMS.includes($("algorithm").value) && $("target-pattern").value === "custom") {
+    const errors = showPatternProblem();
+    if (errors.length) {
+      if (!quiet) toast(`Fix the pattern first: line ${errors[0].line}, ${errors[0].message}`, true);
+      return false;
+    }
+  }
   const problem = settings.problem;
   if (problem) {
     if (!quiet) toast(`Fix the coordinates first: line ${problem[0].line}, ${problem[0].message}`, true);
@@ -134,8 +251,11 @@ function updatePlaybackOptions() {
   }
 }
 
-function onSettingChange() {
+function onSettingChange(key) {
   if (state === "loading") return;
+  // Defaults (or several settings at once): the pattern list and editor follow the settings.
+  if (key === null) syncPatternVisibility();
+  if (!$("pattern_editor").hidden) showPatternProblem();
   syncAddress();
   updatePlaybackOptions();
   if (state === "ready") {
@@ -159,6 +279,7 @@ function setState(next) {
   $("step_time").disabled = !canRun;
   $("reset").disabled = next === "loading";
   $("algorithm").disabled = next === "loading";
+  $("target-pattern").disabled = next === "loading";
   updateHud(true);
 }
 
@@ -265,18 +386,24 @@ $("examples_menu").addEventListener("keydown", (e) => {
   items[(to + items.length) % items.length].focus();
 });
 
-client.on("ready", (list) => {
+client.on("ready", ({ algorithms: all, patterns }) => {
+  const list = all.filter((a) => !HIDDEN_ALGORITHMS.includes(a.key));
   algorithms = list;
   $("algorithm").innerHTML = list.map((a) => `<option value="${a.key}">${a.name}</option>`).join("");
   const asked = list.find((a) => a.key === link.algorithm);
-  if (asked) {
-    $("algorithm").value = asked.key;
-    if (asked.sequential_only) settings.set("scheduler", "sequential", false);
-  }
+  if (asked) $("algorithm").value = asked.key;
+  // The model first (SqGathering, SqPF: the sequential scheduler), so the speed menu offers turn speeds.
+  settings.lockModel(modelLockFor(chosenAlgorithm()));
   updateExamples();
   updatePlaybackOptions();
   const speed = link.speed === "max" ? "Infinity" : link.speed;
   if (speed && [...$("playback").options].some((o) => o.value === speed)) $("playback").value = speed;
+  // Pattern Formation's shape list (default star); shown only while it is the chosen algorithm.
+  $("target-pattern").innerHTML = (patterns ?? []).map((p) => `<option value="${p.key}">${p.name}</option>`).join("")
+    + `<option value="custom">Custom coordinates…</option>`;
+  // A link that does not give the robot count starts SqPF with one robot per pattern point.
+  if (!("num_of_robots" in link.settings)) startWithOneRobotPerPoint();
+  syncPatternVisibility();
   $("loading_text").textContent = "Building the swarm…";
   newRun();
   if (link.links && !$("links").hidden) setLinks(true); // who sees whom, asked for by the link
@@ -326,7 +453,9 @@ function showEndNote(kind) {
   const points = trace.points, size = points.length ? points[points.length - 1] : 0;
   const zoomed = renderer.zoom > 20 ? ` This view is zoomed in ${fmtZoomWords(renderer.zoom)} times; the grid and the scale bar show the real size.` : "";
   let html;
-  if (kind === "ended") {
+  if (kind === "stalled" && frame?.formed === 1) {
+    html = `<div class="cap-head">Pattern formed: no robot moves any more</div><div class="cap-body">The occupied points are the pattern, up to translation, rotation, reflection and scale. Robots under Sequential Pattern Formation never terminate, as in the paper: the run stops after a whole epoch in which no robot moved. The swarm is ${fmtSize(size)} units across.${zoomed}</div>`;
+  } else if (kind === "ended") {
     html = `<div class="cap-head">Finished: every robot has terminated</div><div class="cap-body">Grey robots have terminated. The swarm is ${fmtSize(size)} units across (from its centre to its farthest robot).${zoomed}</div>`;
   } else {
     // Stalled: a whole round in which no robot could move or finish. Often the numbers have run out: a robot's
@@ -470,6 +599,7 @@ function updateHud(force = false) {
   const statusText = {
     loading: "Loading…", ready: "Ready", running: "Running", paused: "Paused",
     ended: frame?.ended ? "Ended · all terminated"
+      : frame?.stop === "stalled" && frame?.formed === 1 ? "Formed · no robot moves any more"
       : frame?.stop === "stalled" ? "Stalled · nothing can move any more"
       : frame?.stop === "max-turns" ? "Stopped · turn limit reached" : `Stopped (${frame?.stop})`,
   }[state];
@@ -518,6 +648,13 @@ function updateLegend() {
   $("legend").innerHTML = items.map(([c, n]) =>
     `<span class="item"><span class="dot" style="background:${c.fill}"></span>${c.label} <span class="count">${n.toLocaleString()}</span></span>`).join("")
     || `<span class="item">No robots</span>`;
+  // Pattern Formation's overlay colours, while the pattern is drawn.
+  const p = renderer.patternStats;
+  if (p) {
+    $("legend").innerHTML +=
+      `<span class="item"><span class="swatch-line" style="background:${PATTERN_COLORS.line}"></span>Pattern (${p.points} points)</span>`
+      + `<span class="item"><span class="swatch-ring" style="border-color:${PATTERN_COLORS.reached}"></span>On a pattern point <span class="count">${p.reached}</span></span>`;
+  }
 }
 
 /* ------------------------------------------------------------- toolbar */
@@ -526,19 +663,42 @@ $("step_event").addEventListener("click", () => step("event"));
 $("step_time").addEventListener("click", () => step("time"));
 $("reset").addEventListener("click", () => newRun());
 $("algorithm").addEventListener("change", () => {
+  // An algorithm that only works in its paper's model (SqGathering, SqPF) fixes the settings
+  // of that model, the scheduler first: it is switched to Sequential and cannot be changed back.
+  const a = chosenAlgorithm();
+  const wasSequential = settings.values.scheduler === "sequential";
+  startWithOneRobotPerPoint();
+  syncPatternVisibility(); // show/hide the pattern list; lock the model
   updateExamples();
   syncAddress();
-  // An algorithm that only works under the sequential scheduler (SqGathering)
-  // switches it on, rather than failing with the async default.
-  const a = algorithms.find((x) => x.key === $("algorithm").value);
-  if (a?.sequential_only && settings.values.scheduler !== "sequential") {
-    settings.set("scheduler", "sequential", false);
-    toast(`${a.name} runs one robot at a time: Scheduler set to Sequential`);
+  if (a?.sequential_only && !wasSequential) {
+    toast(`${a.name} runs one robot at a time: Scheduler set to Sequential (fixed while it is chosen)`);
   }
   // A new algorithm is a new experiment: start it now, even mid-run.
   if (state === "loading") return;
   if (state === "ready") onSettingChange();
   else newRun();
+});
+// A new shape is a new experiment (and a new robot count): start it now, even mid-run.
+$("target-pattern").addEventListener("change", () => {
+  settings.set("target_pattern", $("target-pattern").value, false);
+  startWithOneRobotPerPoint();
+  syncPatternVisibility();
+  if (state === "loading") return;
+  syncAddress();
+  if (state === "ready") onSettingChange();
+  else newRun();
+});
+$("pattern_points").addEventListener("input", () => {
+  settings.set("pattern_points", $("pattern_points").value, false);
+  showPatternProblem();
+});
+$("pattern_apply").addEventListener("click", () => {
+  if (showPatternProblem().length) return;
+  startWithOneRobotPerPoint();
+  syncPatternVisibility();
+  syncAddress();
+  newRun();
 });
 $("playback").addEventListener("change", () => {
   syncAddress();
@@ -550,7 +710,11 @@ $("playback").addEventListener("change", () => {
     renderer.requestDraw();
   }
 });
-$("defaults").addEventListener("click", () => settings.reset());
+$("defaults").addEventListener("click", () => {
+  settings.reset(); // the pattern list and editor follow (onSettingChange)
+  startWithOneRobotPerPoint(); // SqPF: one robot per point again, not the 500-robot default
+  syncPatternVisibility();
+});
 $("toggle_settings").addEventListener("click", toggleSettings);
 $("close_settings").addEventListener("click", toggleSettings);
 // Phones (and short screens) open on the swarm; settings is one tap away.
@@ -600,6 +764,9 @@ $("zoom_out").addEventListener("click", () => renderer.zoomAt(0.8));
 $("hud_zoom_in").addEventListener("click", () => renderer.zoomAt(1.25));
 $("hud_zoom_out").addEventListener("click", () => renderer.zoomAt(0.8));
 $("fit").addEventListener("click", () => renderer.resetView());
+$("rotate_left").addEventListener("click", () => renderer.rotateBy(15));
+$("rotate_right").addEventListener("click", () => renderer.rotateBy(-15));
+for (const id of ["rotate_left", "rotate_right"]) $(id).addEventListener("dblclick", () => renderer.setRotation(0));
 $("grid").addEventListener("click", toggleGrid);
 function toggleOverview() {
   $("overview").hidden = !$("overview").hidden;
@@ -796,6 +963,7 @@ canvas.addEventListener("wheel", (e) => {
   if (embedded && !e.ctrlKey) return; // inside another page the wheel scrolls that page; Ctrl + wheel zooms
   e.preventDefault();
   const rect = canvas.getBoundingClientRect();
+  if (e.shiftKey) { renderer.rotateBy(-(e.deltaY || e.deltaX) * 0.1); return; } // Shift + wheel turns the view
   renderer.zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - rect.left, e.clientY - rect.top);
 }, { passive: false });
 new ResizeObserver(() => { renderer.resize(); updateInsets(); }).observe($("stage"));
@@ -832,6 +1000,7 @@ window.addEventListener("keydown", (e) => {
     g: toggleGrid, G: toggleGrid,
     o: toggleOverview, O: toggleOverview,
     m: toggleMeasure, M: toggleMeasure,
+    "[": () => renderer.rotateBy(15), "]": () => renderer.rotateBy(-15), "\\": () => renderer.setRotation(0),
     "+": () => renderer.zoomAt(1.25), "=": () => renderer.zoomAt(1.25), "-": () => renderer.zoomAt(0.8),
     v: toggleLinks, V: toggleLinks,
     s: toggleSettings, S: toggleSettings,

@@ -110,6 +110,7 @@ export function linkQuery({ values, algorithm, playback, points }) {
     const v = values[s.key];
     if (s.key === "custom" || (custom && (START_SHAPE.includes(s.key) || s.key === "num_of_robots"))) continue;
     if (s.key === "visibility_radius" && values.unlimited_visibility) continue; // not used
+    if (s.key === "pattern_points" && values.target_pattern !== "custom") continue; // not used
     if (v === s.value && !(shapeChanged && START_SHAPE.includes(s.key))) continue;
     parts.push([SHORT[s.key] ?? s.key, s.kind === "switch" ? (v ? "1" : "0") : String(v)]);
   }

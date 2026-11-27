@@ -13,6 +13,10 @@ export const GROUPS = [
 ];
 
 const SHAPES = ["square", "rectangle", "circle", "polygon", "line"];
+/** The shapes the pattern-formation algorithms form (the core's PatternShape), then custom coordinates. */
+export const TARGET_SHAPES = [["star", "Star"], ["circle", "Circle"], ["square", "Square"], ["triangle", "Triangle"],
+  ["pentagon", "Pentagon"], ["hexagon", "Hexagon"], ["line", "Line"], ["cross", "Cross"], ["heart", "Heart"],
+  ["custom", "Custom coordinates…"]];
 const ROTATABLE = ["square", "rectangle", "line", "polygon", "clusters"];
 const SIZE_LABEL = { square: "Side length", rectangle: "Width", circle: "Diameter", polygon: "Diameter", line: "Length", clusters: "Distance between groups" };
 
@@ -21,11 +25,20 @@ const SIZE_LABEL = { square: "Side length", rectangle: "Width", circle: "Diamete
 // `key` is the SimConfig field unless `local`; `label` may be a function of the
 // values; `note` is a line under the control; `showIf` hides a setting that
 // does not apply; `enabledBy` greys it out; `more` puts it under "More options"
-// (a function of the values, or true).
+// (a function of the values, or true); `panel: false` keeps it out of the panel
+// because its control is elsewhere on the page (it is still saved in links and
+// reset by Defaults).
 export const SETTINGS = [
   { key: "num_of_robots", group: "swarm", label: "Robots", kind: "log", min: 1, max: 10000, value: 500,
     enabledBy: (v) => v.pattern !== "custom",
     hint: "Number of robots. With your own positions it is the number of positions." },
+  // The pattern-formation algorithms' shape and custom coordinates. Their controls are the toolbar's
+  // pattern list and its "Custom coordinates…" editor (web/app.js); `target_pattern` is the core's field
+  // (app.js sends "custom" as the points themselves).
+  { key: "target_pattern", group: "swarm", label: "Pattern to form", kind: "select", value: "star", local: true, panel: false,
+    options: TARGET_SHAPES, hint: "The shape Sequential Pattern Formation forms: a predefined one or your own coordinates." },
+  { key: "pattern_points", group: "swarm", label: "Pattern coordinates", kind: "text", local: true, panel: false,
+    value: "0, 0\n100, 0\n100, 100\n0, 100", hint: "The custom pattern, one x, y per line." },
   { key: "random_seed", group: "swarm", label: "Random seed", kind: "number", min: 0, max: 4294967295, value: 12345, dice: true,
     hint: "Same seed and settings give the same run, every time, on every machine." },
 
@@ -158,7 +171,7 @@ export function buildSettings(root, onChange) {
     details.dataset.group = g.id;
     details.innerHTML = `<summary><span class="chev" data-icon="chevron" data-size="14"></span>${g.label}</summary><div class="group-body"></div>`;
     const body = details.querySelector(".group-body");
-    const own = SETTINGS.filter((x) => x.group === g.id);
+    const own = SETTINGS.filter((x) => x.group === g.id && x.panel !== false);
     for (const s of own) {
       const field = document.createElement("div");
       field.className = "field";
@@ -215,6 +228,7 @@ export function buildSettings(root, onChange) {
 
   function show(key) {
     const s = byKey[key], f = fields[key], v = values[key], id = `set-${key}`;
+    if (!f) return; // a setting with its control elsewhere (panel: false)
     if (s.kind === "switch") f.querySelector("input").checked = v;
     else if (s.kind === "select") {
       const sel = f.querySelector("select");
@@ -267,7 +281,7 @@ export function buildSettings(root, onChange) {
     // which is hidden when nothing in it applies.
     for (const m of mores) {
       let any = false;
-      for (const s of SETTINGS.filter((x) => x.group === m.group)) {
+      for (const s of SETTINGS.filter((x) => x.group === m.group && fields[x.key])) {
         const more = typeof s.more === "function" ? s.more(values) : Boolean(s.more);
         (more ? m.body : m.main).append(fields[s.key]);
         if (more && (!s.showIf || s.showIf(values))) any = true;
@@ -277,11 +291,17 @@ export function buildSettings(root, onChange) {
       m.details.hidden = !any;
     }
     for (const s of SETTINGS) {
+      if (!fields[s.key]) continue;
       if (typeof s.label === "function") fields[s.key].querySelector("label").textContent = s.label(values);
       if (s.note) fields[s.key].querySelector(".note").textContent = s.note(values);
       if (s.showIf) fields[s.key].hidden = !s.showIf(values);
-      if (s.enabledBy) {
-        const on = s.enabledBy(values);
+      // A setting the chosen algorithm's model fixes (lockModel) cannot be changed.
+      const fixed = Boolean(modelLock && s.key in modelLock.values);
+      const wasFixed = fields[s.key].classList.contains("locked");
+      fields[s.key].classList.toggle("locked", fixed);
+      fields[s.key].title = fixed ? modelLock.reason : "";
+      if (s.enabledBy || fixed || wasFixed) {
+        const on = (s.enabledBy ? s.enabledBy(values) : true) && !fixed;
         fields[s.key].classList.toggle("disabled", !on);
         for (const el of fields[s.key].querySelectorAll("input, select, textarea")) el.disabled = !on;
       }
@@ -293,6 +313,9 @@ export function buildSettings(root, onChange) {
   function set(key, v, notify = true) {
     const s = byKey[key];
     const before = values.open_world;
+    // The model of the chosen algorithm wins: a fixed setting keeps its value, a bounded one its bound.
+    if (modelLock && key in modelLock.values) v = modelLock.values[key];
+    if (modelLock && key in modelLock.min) v = Math.max(modelLock.min[key], Number(v));
     values[key] = clamp(s, v);
     if (key === "open_world" && values.open_world !== before) {
       // Switching worlds picks that world's natural start.
@@ -318,8 +341,16 @@ export function buildSettings(root, onChange) {
     if (notify) onChange(key, values);
   }
 
+  /** The chosen algorithm's model (lockModel): fixed values, and lowest values. */
+  function applyLock() {
+    if (!modelLock) return;
+    for (const [key, v] of Object.entries(modelLock.values)) { values[key] = clamp(byKey[key], v); show(key); }
+    for (const [key, m] of Object.entries(modelLock.min)) if (values[key] < m) { values[key] = clamp(byKey[key], m); show(key); }
+  }
+
   for (const s of SETTINGS) {
     const f = fields[s.key], id = `set-${s.key}`;
+    if (!f) continue;
     if (s.kind === "switch") f.querySelector("input").addEventListener("change", (e) => set(s.key, e.target.checked));
     else if (s.kind === "select") f.querySelector("select").addEventListener("change", (e) => {
       set(s.key, e.target.value);
@@ -345,9 +376,23 @@ export function buildSettings(root, onChange) {
     /** Errors that stop a run from being built (custom coordinates only). */
     get problem() { return values.pattern === "custom" && customResult.errors.length ? customResult.errors : null; },
     get customPoints() { return customResult.points; },
+    /**
+     * Fix settings to the model an algorithm is defined in, and grey them out (null: free them again).
+     * `lock` is {values: {key: value}, min: {key: lowest value}, reason}.
+     */
+    lockModel(lock) {
+      modelLock = lock ? { values: lock.values ?? {}, min: lock.min ?? {}, reason: lock.reason ?? "" } : null;
+      applyLock();
+      refresh();
+    },
     /** Sets several settings at once (in the order given) and restarts the run once. */
     apply(entries) { for (const [key, value] of Object.entries(entries)) set(key, value, false); onChange(null, values); },
-    reset() { for (const s of SETTINGS) values[s.key] = s.value; refresh(); for (const s of SETTINGS) show(s.key); refresh(); onChange(null, values); },
+    /** Every setting back to its default; the chosen algorithm's model still holds. */
+    reset() {
+      for (const s of SETTINGS) values[s.key] = s.value;
+      applyLock();
+      refresh(); for (const s of SETTINGS) show(s.key); refresh(); onChange(null, values);
+    },
   };
 }
 
@@ -379,6 +424,9 @@ function buildCoordinateEditor(onInput) {
     close,
   };
 }
+
+/** Settings fixed by the chosen algorithm's model (SqGathering, SqPF), or null. See `lockModel`. */
+let modelLock = null;
 
 /** SimConfig for the core from the panel's values plus the chosen algorithm. */
 export function readConfig(values, algorithm, customPoints = []) {
