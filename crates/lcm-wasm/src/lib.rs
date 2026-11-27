@@ -151,7 +151,11 @@ impl WasmSimulation {
     #[must_use]
     pub fn pattern_formed(&self) -> i32 {
         self.pattern.as_ref().map_or(-1, |p| {
-            i32::from(lcm_algorithms::sq_pattern_formation::is_formed(p, &self.sim.robots().pos))
+            i32::from(lcm_algorithms::sq_pattern_formation::is_formed(
+                p,
+                &self.sim.robots().pos,
+                self.sim.model().eps,
+            ))
         })
     }
 
@@ -164,7 +168,11 @@ impl WasmSimulation {
         self.pattern
             .as_ref()
             .and_then(|p| {
-                lcm_algorithms::sq_pattern_formation::formed_placement(p, &self.sim.robots().pos)
+                lcm_algorithms::sq_pattern_formation::formed_placement(
+                    p,
+                    &self.sim.robots().pos,
+                    self.sim.model().eps,
+                )
             })
             .map_or_else(Vec::new, |pts| pts.iter().flat_map(|q| [q.x, q.y]).collect())
     }

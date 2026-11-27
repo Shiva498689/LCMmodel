@@ -830,7 +830,7 @@ function slice(gen) {
 }
 ```
 
-`advance` — [`crates/lcm-wasm/src/lib.rs:172`](../crates/lcm-wasm/src/lib.rs#L172)
+`advance` — [`crates/lcm-wasm/src/lib.rs:180`](../crates/lcm-wasm/src/lib.rs#L180)
 
 ```rust
 /// Handles up to `max_events` events, stopping early before the first
@@ -910,7 +910,7 @@ function postFrame(extra = {}) {
 }
 ```
 
-`fill_frame` — [`crates/lcm-wasm/src/lib.rs:495`](../crates/lcm-wasm/src/lib.rs#L495)
+`fill_frame` — [`crates/lcm-wasm/src/lib.rs:503`](../crates/lcm-wasm/src/lib.rs#L503)
 
 ```rust
 /// Captures the current state straight into caller-owned arrays, so the
@@ -1824,7 +1824,7 @@ flowchart TD
 | Γ has one too? | The pattern points must not create a smaller angle than θ₁. |
 | Occupy | The walker (the highest priority free robot with a free path) goes, via O, to the highest priority empty pattern point. |
 
-`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1307`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1307)
+`compute` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1318`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1318)
 
 ```rust
 /// Look in the robot's own frame, Compute with [`destination`], and hand
@@ -1833,8 +1833,11 @@ flowchart TD
 fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
     let compass = self.compasses[look.me as usize % self.compasses.len()];
     let frame = compass.frame(look.position);
-    let q_pts = snapshot(&look.view.pos, &frame);
-    let (dest, _) = destination(&self.pattern, &q_pts);
+    // The simulator drops moves shorter than its eps: the robot treats
+    // points that close as one (in its own unit for Compute).
+    let min_move = look.model.eps;
+    let q_pts = snapshot(&look.view.pos, &frame, min_move);
+    let (dest, _) = destination(&self.pattern, &q_pts, min_move * compass.scale);
     let target = if dest.x == 0.0 && dest.y == 0.0 {
         look.position
     } else {
@@ -1848,19 +1851,20 @@ fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
 }
 ```
 
-`snapshot` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:378`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L378)
+`snapshot` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:381`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L381)
 
 ```rust
 /// The Look phase (Section 2.1): the set Q of distinct points occupied by
 /// robots, "expressed within a private coordinate system" of which the robot
-/// is the origin. Positions closer than 10⁻⁹ of the snapshot's size are one
-/// point (no multiplicity detection: the count is not kept). Sorted by the
-/// robot's own coordinates, so nothing of the robots' identities survives.
+/// is the origin. Positions closer than 10⁻⁹ of the snapshot's size, or closer
+/// than `min_move` (world units: the simulator's minimum move), are one point
+/// (no multiplicity detection: the count is not kept). Sorted by the robot's
+/// own coordinates, so nothing of the robots' identities survives.
 #[must_use]
-pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
+pub fn snapshot(world: &[Point], frame: &LocalFrame, min_move: f64) -> Vec<Point> {
     let local: Vec<Point> = world.iter().map(|&p| frame.to_local(p)).collect();
     let span = local.iter().map(|&p| norm(p)).fold(0.0, f64::max);
-    let tol = REL_TOL * span;
+    let tol = (REL_TOL * span).max(min_move * frame.scale);
     // The first robot seen on a point stands for it, as in a scan of the points
     // kept so far; the tree keeps them by x, so each look is O(log n), not O(n).
     let mut q: Vec<Point> = Vec::with_capacity(local.len() + 1);
@@ -1885,26 +1889,28 @@ pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
 }
 ```
 
-`destination` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1174`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1174)
+`destination` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1179`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1179)
 
 ```rust
 /// The robot's Compute phase: SqPF (|P̂| ≥ 5) or SqPF′ (|P̂| < 5) on the
 /// snapshot `q_pts` (the set Q in the robot's own frame, the robot at the
 /// origin, as [`snapshot`] builds it). Returns the destination in the same frame.
+/// `min_move` is the simulator's minimum move in the robot's own unit: points
+/// closer than it (or than 10⁻⁹·ρ) are the same point.
 ///
 /// # Panics
 /// If `q_pts` does not contain the origin.
 #[must_use]
-pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
+pub fn destination(pat: &Pattern, q_pts: &[Point], min_move: f64) -> (Point, Step) {
     let q = *q_pts
         .iter()
         .find(|p| p.x == 0.0 && p.y == 0.0)
         .expect("the robot is at the origin of its own snapshot");
     if q_pts.len() < pat.len() {
-        return (separate(q_pts, q), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
+        return (separate(q_pts, q, min_move), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
     }
     let (o, rho) = sec(q_pts);
-    let sc = Scene::new(q, q_pts, o, rho, REL_TOL * rho);
+    let sc = Scene::new(q, q_pts, o, rho, (REL_TOL * rho).max(min_move));
     if pat.len() >= 5 {
         sqpf(pat, &sc)
     } else {
@@ -1913,14 +1919,15 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
 }
 ```
 
-`separate` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:781`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L781)
+`separate` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:785`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L785)
 
 ```rust
 /// Procedure 2, Separate: a point at one unit along the robot's own x-axis,
 /// or the midpoint towards the closest robot on that segment.
-fn separate(pts: &[Point], q: Point) -> Point {
+fn separate(pts: &[Point], q: Point, min_move: f64) -> Point {
     let span = pts.iter().map(|&p| dist(p, q)).fold(0.0, f64::max);
-    let sc = Scene::new(q, pts, q, span.max(1.0), REL_TOL * span.max(1.0));
+    let scale = span.max(1.0);
+    let sc = Scene::new(q, pts, q, scale, (REL_TOL * scale).max(min_move));
     let q1 = Point::new(q.x + 1.0, q.y); // l. 1: q′, one unit along the x-axis
     let on = sc.robots_on(q, q1);
     let on: Vec<Point> = on
@@ -1937,7 +1944,7 @@ fn separate(pts: &[Point], q: Point) -> Point {
 }
 ```
 
-`sqpf_prime` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1047`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1047)
+`sqpf_prime` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:1052`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L1052)
 
 ```rust
 /// Algorithm 7, SqPF′ (1 < |P̂| < 5), after the |Q| < k test.
@@ -2068,7 +2075,7 @@ fn sqpf_prime(pat: &Pattern, sc: &Scene) -> (Point, Step) {
 }
 ```
 
-`last` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:801`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L801)
+`last` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:806`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L806)
 
 ```rust
 /// Procedure 3, Last.
@@ -2135,7 +2142,7 @@ fn last(pat: &Pattern, sc: &Scene) -> Option<(Point, Step)> {
 }
 ```
 
-`overlap` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:864`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L864)
+`overlap` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:869`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L869)
 
 ```rust
 /// Procedure 4, Overlap.
@@ -2151,7 +2158,7 @@ fn overlap(pat: &Pattern, sc: &Scene) -> Option<Gamma> {
 }
 ```
 
-`leader` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:876`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L876)
+`leader` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:881`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L881)
 
 ```rust
 /// Procedure 5, Leader.
@@ -2197,7 +2204,7 @@ fn leader(sc: &Scene, gamma: Option<&Gamma>) -> (Point, Step) {
 }
 ```
 
-`occupy` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:918`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L918)
+`occupy` — [`crates/lcm-algorithms/src/sq_pattern_formation.rs:923`](../crates/lcm-algorithms/src/sq_pattern_formation.rs#L923)
 
 ```rust
 /// Procedure 6, Occupy (with the walker of Section 4.1.7).

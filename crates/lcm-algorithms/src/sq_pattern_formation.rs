@@ -39,7 +39,10 @@ use crate::sq_gathering::LocalFrame;
 /// Registry key.
 pub const KEY: &str = "SqPatternFormation";
 
-/// Positions closer than this fraction of the SEC radius ρ are the same point.
+/// Positions closer than this fraction of the SEC radius ρ are the same point,
+/// and so are positions closer than the simulator's minimum move (its `eps`):
+/// a robot cannot move by less, so a robot that near a point is on it
+/// (docs/sqpf.md, choice 9).
 const REL_TOL: f64 = 1e-9;
 /// Directions closer than this (radians) are the same radius (co-radial).
 const ANG_TOL: f64 = 1e-9;
@@ -377,14 +380,15 @@ fn x_key(x: f64) -> u64 {
 
 /// The Look phase (Section 2.1): the set Q of distinct points occupied by
 /// robots, "expressed within a private coordinate system" of which the robot
-/// is the origin. Positions closer than 10⁻⁹ of the snapshot's size are one
-/// point (no multiplicity detection: the count is not kept). Sorted by the
-/// robot's own coordinates, so nothing of the robots' identities survives.
+/// is the origin. Positions closer than 10⁻⁹ of the snapshot's size, or closer
+/// than `min_move` (world units: the simulator's minimum move), are one point
+/// (no multiplicity detection: the count is not kept). Sorted by the robot's
+/// own coordinates, so nothing of the robots' identities survives.
 #[must_use]
-pub fn snapshot(world: &[Point], frame: &LocalFrame) -> Vec<Point> {
+pub fn snapshot(world: &[Point], frame: &LocalFrame, min_move: f64) -> Vec<Point> {
     let local: Vec<Point> = world.iter().map(|&p| frame.to_local(p)).collect();
     let span = local.iter().map(|&p| norm(p)).fold(0.0, f64::max);
-    let tol = REL_TOL * span;
+    let tol = (REL_TOL * span).max(min_move * frame.scale);
     // The first robot seen on a point stands for it, as in a scan of the points
     // kept so far; the tree keeps them by x, so each look is O(log n), not O(n).
     let mut q: Vec<Point> = Vec::with_capacity(local.len() + 1);
@@ -780,9 +784,10 @@ impl<'a> Scene<'a> {
 
 /// Procedure 2, Separate: a point at one unit along the robot's own x-axis,
 /// or the midpoint towards the closest robot on that segment.
-fn separate(pts: &[Point], q: Point) -> Point {
+fn separate(pts: &[Point], q: Point, min_move: f64) -> Point {
     let span = pts.iter().map(|&p| dist(p, q)).fold(0.0, f64::max);
-    let sc = Scene::new(q, pts, q, span.max(1.0), REL_TOL * span.max(1.0));
+    let scale = span.max(1.0);
+    let sc = Scene::new(q, pts, q, scale, (REL_TOL * scale).max(min_move));
     let q1 = Point::new(q.x + 1.0, q.y); // l. 1: q′, one unit along the x-axis
     let on = sc.robots_on(q, q1);
     let on: Vec<Point> = on
@@ -1174,20 +1179,22 @@ fn sqpf_prime(pat: &Pattern, sc: &Scene) -> (Point, Step) {
 /// The robot's Compute phase: SqPF (|P̂| ≥ 5) or SqPF′ (|P̂| < 5) on the
 /// snapshot `q_pts` (the set Q in the robot's own frame, the robot at the
 /// origin, as [`snapshot`] builds it). Returns the destination in the same frame.
+/// `min_move` is the simulator's minimum move in the robot's own unit: points
+/// closer than it (or than 10⁻⁹·ρ) are the same point.
 ///
 /// # Panics
 /// If `q_pts` does not contain the origin.
 #[must_use]
-pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
+pub fn destination(pat: &Pattern, q_pts: &[Point], min_move: f64) -> (Point, Step) {
     let q = *q_pts
         .iter()
         .find(|p| p.x == 0.0 && p.y == 0.0)
         .expect("the robot is at the origin of its own snapshot");
     if q_pts.len() < pat.len() {
-        return (separate(q_pts, q), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
+        return (separate(q_pts, q, min_move), Step::Separate); // Alg. 1 l. 2-3 / Alg. 7 l. 3-4
     }
     let (o, rho) = sec(q_pts);
-    let sc = Scene::new(q, q_pts, o, rho, REL_TOL * rho);
+    let sc = Scene::new(q, q_pts, o, rho, (REL_TOL * rho).max(min_move));
     if pat.len() >= 5 {
         sqpf(pat, &sc)
     } else {
@@ -1196,27 +1203,31 @@ pub fn destination(pat: &Pattern, q_pts: &[Point]) -> (Point, Step) {
 }
 
 /// `true` when the robots at `world` form P̂: the set of occupied points is
-/// similar to it (Q ∈ 𝓑(P̂), Section 2.3). For reports and the page; robots
-/// never call it.
+/// similar to it (Q ∈ 𝓑(P̂), Section 2.3). `min_move` is the simulator's
+/// minimum move, the tolerance the robots themselves use. For reports and the
+/// page; robots never call it.
 #[must_use]
-pub fn is_formed(pat: &Pattern, world: &[Point]) -> bool {
-    formed_placement(pat, world).is_some()
+pub fn is_formed(pat: &Pattern, world: &[Point], min_move: f64) -> bool {
+    formed_placement(pat, world, min_move).is_some()
 }
 
 /// When the robots at `world` form P̂: the pattern points where they are,
 /// in world coordinates and in the order P̂ was given (so the page can join
 /// them into the shape's outline). `None` while the pattern is not formed.
-/// For reports and the page; robots never call it.
+/// `min_move` as for [`is_formed`]. For reports and the page; robots never
+/// call it.
 #[must_use]
-pub fn formed_placement(pat: &Pattern, world: &[Point]) -> Option<Vec<Point>> {
+pub fn formed_placement(pat: &Pattern, world: &[Point], min_move: f64) -> Option<Vec<Point>> {
     let &first = world.first()?;
     let frame = LocalFrame::global(first);
-    let q_pts = snapshot(world, &frame);
+    let q_pts = snapshot(world, &frame, min_move);
     if q_pts.len() != pat.len() {
         return None;
     }
     let (o, rho) = sec(&q_pts);
-    let sc = Scene::new(q_pts[0], &q_pts, o, rho, 1e-7 * rho);
+    // A little wider than the robots' own tolerance, so the page never calls
+    // "not formed" a configuration the robots stopped on as formed.
+    let sc = Scene::new(q_pts[0], &q_pts, o, rho, (1e-7 * rho).max(2.0 * min_move));
     // A pair (x, y) can carry p̂₀p̂₁ only at the scale of SEC(Q): when every
     // point of the placement is within tol of Q, the radii of the two SECs
     // differ by at most tol, so | |xy| − ρ·|p̂₀p̂₁| | ≤ tol·|p̂₀p̂₁| ≤ 2·tol
@@ -1310,8 +1321,11 @@ impl Algorithm for SqPatternFormation {
     fn compute(&self, look: &Look<'_>, _: &mut Rng, _: &mut Scratch) -> Decision {
         let compass = self.compasses[look.me as usize % self.compasses.len()];
         let frame = compass.frame(look.position);
-        let q_pts = snapshot(&look.view.pos, &frame);
-        let (dest, _) = destination(&self.pattern, &q_pts);
+        // The simulator drops moves shorter than its eps: the robot treats
+        // points that close as one (in its own unit for Compute).
+        let min_move = look.model.eps;
+        let q_pts = snapshot(&look.view.pos, &frame, min_move);
+        let (dest, _) = destination(&self.pattern, &q_pts, min_move * compass.scale);
         let target = if dest.x == 0.0 && dest.y == 0.0 {
             look.position
         } else {
@@ -1481,8 +1495,8 @@ mod tests {
     #[test]
     fn separate_goes_one_unit_along_the_own_x_axis_or_halfway_to_the_blocker() {
         let o = p(0.0, 0.0);
-        assert_eq!(separate(&[o, p(5.0, 5.0)], o), p(1.0, 0.0));
-        assert_eq!(separate(&[o, p(0.5, 0.0), p(5.0, 5.0)], o), p(0.25, 0.0));
+        assert_eq!(separate(&[o, p(5.0, 5.0)], o, 0.0), p(1.0, 0.0));
+        assert_eq!(separate(&[o, p(0.5, 0.0), p(5.0, 5.0)], o, 0.0), p(0.25, 0.0));
     }
 }
 

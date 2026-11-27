@@ -44,7 +44,7 @@ fn config(shape: PatternShape, robots: u32, seed: u64, delta: f64) -> SimConfig 
 /// The robot's decision, in world coordinates, seen through `frame`.
 fn decide_world(pat: &Pattern, world: &[Point], me: usize, frame: &LocalFrame) -> (Point, Step) {
     let frame = LocalFrame { origin: world[me], ..*frame };
-    let (d, step) = destination(pat, &snapshot(world, &frame));
+    let (d, step) = destination(pat, &snapshot(world, &frame, 0.0), 0.0);
     (frame.to_global(d), step)
 }
 
@@ -96,9 +96,9 @@ fn robots_on_one_point_are_one_point_and_have_no_identity() {
     let f = LocalFrame::global(p(3.0, 4.0));
     let two = [p(3.0, 4.0), p(0.0, 0.0), p(0.0, 0.0), p(9.0, 1.0)];
     let five = [p(0.0, 0.0), p(9.0, 1.0), p(0.0, 0.0), p(3.0, 4.0), p(0.0, 0.0), p(0.0, 0.0), p(0.0, 0.0)];
-    assert_eq!(snapshot(&two, &f), snapshot(&five, &f));
+    assert_eq!(snapshot(&two, &f, 0.0), snapshot(&five, &f, 0.0));
     // The robot is the origin of its own snapshot.
-    assert!(snapshot(&two, &f).contains(&p(0.0, 0.0)));
+    assert!(snapshot(&two, &f, 0.0).contains(&p(0.0, 0.0)));
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn separate_moves_robots_off_a_multiplicity_along_their_own_x_axis() {
     // Fewer occupied points than pattern points: Procedure Separate.
     let pat = Pattern::new(&shape_points(PatternShape::Pentagon)).unwrap();
     let q = [p(0.0, 0.0), p(5.0, 5.0), p(-7.0, 2.0)];
-    let (d, step) = destination(&pat, &q);
+    let (d, step) = destination(&pat, &q, 0.0);
     assert_eq!(step, Step::Separate);
     assert_eq!(d, p(1.0, 0.0));
 }
@@ -143,7 +143,7 @@ fn a_formed_pattern_never_moves() {
                       -9.0 + s * (q.x * f64::sin(angle) + y * f64::cos(angle)))
                 })
                 .collect();
-            assert!(is_formed(&pat, &world), "{shape:?}");
+            assert!(is_formed(&pat, &world, 0.0), "{shape:?}");
             for (me, c) in compasses(world.len(), 3).iter().enumerate() {
                 let (d, step) = decide_world(&pat, &world, me, &c.frame(world[me]));
                 assert!(dist(d, world[me]) < 1e-9, "{shape:?}: robot {me} moves ({step:?})");
@@ -164,7 +164,7 @@ fn the_formed_shape_is_reported_in_the_patterns_own_order() {
         let place = |q: &Point| p(7.0 + 2.0 * q.y, 3.0 + 2.0 * q.x); // swap x and y: a reflection
         let mut world: Vec<Point> = pts.iter().map(place).collect();
         world.push(world[2]);
-        let got = formed_placement(&pat, &world).expect("formed");
+        let got = formed_placement(&pat, &world, 0.0).expect("formed");
         assert_eq!(got.len(), pts.len());
         for g in &got {
             assert!(world.iter().any(|w| dist(*g, *w) < 1e-6), "every drawn point holds a robot");
@@ -177,7 +177,7 @@ fn the_formed_shape_is_reported_in_the_patterns_own_order() {
             }
         }
         world[0].x += 5.0;
-        assert!(formed_placement(&pat, &world).is_none(), "not formed: nothing to draw");
+        assert!(formed_placement(&pat, &world, 0.0).is_none(), "not formed: nothing to draw");
     }
 }
 
@@ -187,7 +187,7 @@ fn run(cfg: &SimConfig) -> (StopReason, bool, u64) {
     let mut sim = lcm_algorithms::simulation(cfg).expect("a valid SqPF config");
     let stop = sim.advance(Budget { max_events: u64::MAX, until_time: f64::INFINITY });
     let pat = pattern_of(cfg).unwrap();
-    (stop, is_formed(&pat, &sim.robots().pos), sim.epochs_completed())
+    (stop, is_formed(&pat, &sim.robots().pos, sim.model().eps), sim.epochs_completed())
 }
 
 #[test]
@@ -229,6 +229,27 @@ fn a_custom_pattern_with_a_point_at_the_centre_is_formed() {
     let (stop, formed, _) = run(&cfg);
     assert_eq!(stop, StopReason::Stalled);
     assert!(formed);
+}
+
+#[test]
+fn a_walker_closer_than_the_minimum_move_is_on_its_pattern_point() {
+    // Regression: the walker ended 3.6·10⁻⁶ from its pattern point. That is above
+    // 10⁻⁹·ρ, so it counted as "not there yet", but below the simulator's minimum
+    // move (`eps` = 10⁻⁵), so its move was dropped: it never moved, the other
+    // robots waited for it, and the run stalled unformed (turn 138, 23 epochs).
+    let cfg = SimConfig {
+        algorithm: KEY.to_owned(),
+        target_pattern: PatternShape::Pentagon,
+        num_of_robots: 6,
+        random_seed: 7,
+        scheduler: SchedulerKind::Sequential,
+        rigid_movement: false,
+        delta: Some(2.0),
+        ..SimConfig::default()
+    };
+    let (stop, formed, epochs) = run(&cfg);
+    assert_eq!(stop, StopReason::Stalled);
+    assert!(formed, "stopped after {epochs} epochs, not formed");
 }
 
 // ── settings the paper's model does not have ─────────────────────────────────

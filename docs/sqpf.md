@@ -86,8 +86,20 @@ Each item is cited in the code.
    robot to pick. A path "contains other robots" if a robot other than the walker lies on it, the
    target point excepted. When every pattern point is occupied and |Q| > k, the walker joins p̂ₖ
    (Lemma 4: "or to position r on a pattern point already occupied if |Q| > |P̂|").
-9. **Numbers.** Points closer than 10⁻⁹·ρ are one point; directions within 10⁻⁹ rad are one radius.
-   Both are relative, so they do not depend on a robot's unit of length.
+9. **Numbers.** Points are one point when they are closer than 10⁻⁹ of the snapshot's size
+   (10⁻⁹·ρ in Compute), or closer than the simulator's minimum move, its `eps` (10⁻⁵ world units by
+   default). Directions within 10⁻⁹ rad are one radius. The relative part does not depend on a robot's
+   unit of length. Each robot converts `eps` to its own unit, so it is the same world distance for every
+   robot and decisions stay frame-independent.
+   - Why the minimum move: the simulator drops any move shorter than `eps`. With the relative tolerance
+     alone, a walker 3.6·10⁻⁶ from its pattern point was "not there yet", so it was told to move. The
+     move was dropped, the walker never moved and the others waited for it forever. This happened in
+     pentagon, n = 6, seed 7, δ = 2: stalled unformed after 23 epochs. A robot that cannot get closer to
+     a point is on it.
+   - The paper's robots move exactly, so this is a property of the simulation, not a change to the
+     algorithm. The page's "formed?" test uses twice the same tolerance, so it never calls "not formed"
+     a configuration the robots stopped on as formed.
+   - The test `a_walker_closer_than_the_minimum_move_is_on_its_pattern_point` replays that run.
 
 ## 4. What the tests and runs show
 
@@ -104,6 +116,11 @@ Each item is cited in the code.
   Another 243 runs on the final code covered the nine predefined shapes: n = k, k + 1 and k + 3;
   random starts, with and without stacked points; δ = 5 with random stops, and rigid. All 243 formed
   the pattern.
+- 250 further runs after merging the core's scheduler and multiplicity work cover all nine shapes,
+  n = 3 to 13, several seeds and δ = 2 to 5. With choice 9's minimum-move tolerance, all 250 formed the
+  pattern.
+  - Before the change, 249 formed and the pentagon run above stalled.
+  - The change altered only that run's trace: the other 135 recorded traces are byte-identical.
 - **Observation about Theorem 2's bound.** 2 of those 1,056 runs took longer than 2(n+1)⌈ρ/δ⌉+2 epochs:
   19 and 21 epochs against 14, both with rigid moves from a regular-pentagon start with n = k = 5.
   The pattern was still formed. The cause: Lemma 4 counts that "3 might be stuck to maintain the SEC and
