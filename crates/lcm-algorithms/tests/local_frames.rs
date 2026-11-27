@@ -8,8 +8,8 @@
 //! `cargo test -p lcm-algorithms --test local_frames -- --nocapture` prints the table.
 
 use lcm_core::{
-    LocalFrame, Look, Model, MultiplicityModel, Point, Rng, RobotState, SchedulerKind, Scratch,
-    SimConfig, View,
+    Frames, LocalFrame, Look, Model, MultiplicityModel, Point, Rng, RobotState, SchedulerKind,
+    Scratch, SimConfig, View,
 };
 
 const TRIALS: usize = 300;
@@ -46,12 +46,27 @@ fn agreement(key: &str, chirality: bool) -> f64 {
         ..SimConfig::default()
     };
     // Two-robot algorithms refuse the default swarm: build them for two.
+    // Sequential Pattern Formation refuses rigid moves and shared axes (its
+    // paper's model): build it with disoriented robots and non-rigid moves of
+    // at least δ.
     let plan = lcm_algorithms::plan(key, &config)
         .or_else(|_| {
             lcm_algorithms::plan(
                 key,
                 &SimConfig {
                     num_of_robots: 2,
+                    ..config.clone()
+                },
+            )
+        })
+        .or_else(|_| {
+            lcm_algorithms::plan(
+                key,
+                &SimConfig {
+                    frames: Frames::Disoriented,
+                    rigid_movement: false,
+                    delta: Some(5.0),
+                    num_of_robots: 10,
                     ..config.clone()
                 },
             )
@@ -124,7 +139,13 @@ fn frame_invariance_of_every_algorithm() {
     // Every registered algorithm uses only distances and angles between
     // robots, so it gives the same point in any frame. An algorithm that
     // reads the axes on purpose must be listed here, with the reason.
-    const FRAME_DEPENDENT: &[&str] = &[];
+    // - PatternFormation: pattern formation with shared axes, which reads the
+    //   world's axes and breaks ties with robot IDs (pattern_formation.rs).
+    // - SqPatternFormation: with fewer robot positions than pattern points it
+    //   runs Procedure Separate, which moves "along its own x-axis" (arXiv:2412.10733,
+    //   Procedure 2). Every other step is checked frame-invariant in
+    //   tests/sq_pattern_formation.rs.
+    const FRAME_DEPENDENT: &[&str] = &["PatternFormation", "SqPatternFormation"];
     for (key, rotated, mirrored) in table {
         if FRAME_DEPENDENT.contains(&key) {
             assert!(rotated < 1.0, "{key} is listed as frame-dependent");
